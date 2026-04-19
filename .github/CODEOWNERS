@@ -1,0 +1,11 @@
+# Code ownership for andrkelemen/wmem.
+#
+# Every file in this repo is owned by @andrkelemen. Pull requests touching
+# any file require review approval from @andrkelemen before they can merge.
+# This pairs with the main-closed-off ruleset (id 15262886) which sets
+# require_code_owner_review=true on the main branch.
+#
+# To change ownership scope (e.g. delegate certain paths to collaborators),
+# add path-specific lines ABOVE the catch-all — later matches take priority.
+
+* @andrkelemen
