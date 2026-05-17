@@ -1,10 +1,10 @@
 // server.mjs — HTTP listener: passthrough + outbox-on-error.
 //
 // Architecture (wmem multi-instance PR-D):
-//   MCP client → POST localhost:4201/<path>
+//   MCP client → POST localhost:18421/<path>
 //                   ↓
 //   [this daemon]
-//                   ↓  try forward to upstream:4200/<path>
+//                   ↓  try forward to upstream:18420/<path>
 //   upstream reachable + 2xx        → pass response back verbatim
 //   upstream reachable + 4xx        → pass response back verbatim (no buffer; caller bug)
 //   upstream reachable + 5xx        → buffer in outbox.db, return 202+buffered
@@ -26,11 +26,17 @@ const VERSION = '0.1.0';
 const startedAt = Date.now();
 
 // ─── config ─────────────────────────────────────────────────
+// Port resolution: env > wmem.config.json > default. Defaults moved out of
+// the 4200-4299 range (Angular CLI default) to reduce dev-machine collisions.
+import { readFileSync as _readFileSync } from 'node:fs';
+let _cfgFile = {};
+try { _cfgFile = JSON.parse(_readFileSync('./wmem.config.json', 'utf8')); } catch {}
+
 const cfg = {
-  upstreamHost: process.env.WMEM_UPSTREAM_HOST ?? '127.0.0.1',
-  upstreamPort: parseInt(process.env.WMEM_UPSTREAM_PORT ?? '4200', 10),
-  bind:    process.env.WMEM_OUTBOX_BIND ?? '127.0.0.1',
-  port:    parseInt(process.env.WMEM_OUTBOX_PORT ?? '4201', 10),
+  upstreamHost: process.env.WMEM_UPSTREAM_HOST ?? _cfgFile.upstreamHost ?? '127.0.0.1',
+  upstreamPort: parseInt(process.env.WMEM_UPSTREAM_PORT ?? _cfgFile.upstreamPort ?? _cfgFile.port ?? '18420', 10),
+  bind:    process.env.WMEM_OUTBOX_BIND ?? _cfgFile.outboxBind ?? '127.0.0.1',
+  port:    parseInt(process.env.WMEM_OUTBOX_PORT ?? _cfgFile.outboxPort ?? '18421', 10),
   tickS:   parseFloat(process.env.WMEM_OUTBOX_TICK_S ?? '5'),
   batch:   parseInt(process.env.WMEM_OUTBOX_BATCH ?? '25', 10),
   deadLetterAfter: parseInt(process.env.WMEM_OUTBOX_DEAD_LETTER_AFTER ?? '12', 10),

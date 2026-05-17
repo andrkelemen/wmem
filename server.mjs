@@ -1,6 +1,7 @@
 /**
  * server.mjs — wmem HTTP service
- * Express on port 4200. SQLite + FTS5. Shared index, per-agent partitions.
+ * Express on port 18420 by default (override via PORT env or wmem.config.json).
+ * SQLite + FTS5. Shared index, per-agent partitions.
  *
  * Day 1 endpoints:
  *   POST /api/ingest — store chunks (messages, memory files, identity files)
@@ -58,7 +59,20 @@ function requireAuth(req, res, next) {
 }
 
 const app = express();
-const PORT = parseInt(process.env.PORT, 10) || 4200;
+
+// Port resolution: env var > wmem.config.json > default 18420.
+// Default moved out of the 4200-4299 range (Angular CLI default) to reduce
+// collisions on dev machines. Operators with their own preferences override
+// via PORT env or wmem.config.json at repo root.
+function resolvePort() {
+  if (process.env.PORT) return parseInt(process.env.PORT, 10);
+  try {
+    const cfg = JSON.parse(readFileSync('./wmem.config.json', 'utf8'));
+    if (cfg.port) return parseInt(cfg.port, 10);
+  } catch {}
+  return 18420;
+}
+const PORT = resolvePort();
 
 app.use(express.json({ limit: '5mb' }));
 

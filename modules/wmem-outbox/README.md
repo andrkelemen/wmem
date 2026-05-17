@@ -9,10 +9,10 @@ Buffers writes to a local SQLite outbox when upstream is unreachable; drains on 
 
 ```
 MCP client / scripts
-       ↓ POST localhost:4201/<path>
+       ↓ POST localhost:18421/<path>
 [wmem-outbox daemon]
        ↓ forward
-upstream :4200/<path>
+upstream :18420/<path>
 ```
 
 - **Upstream reachable + 2xx/3xx/4xx**: passes response back verbatim
@@ -31,7 +31,7 @@ Installs systemd-user service. Starts immediately. Survives reboot via `enable`.
 ## Quick check
 
 ```bash
-curl -s http://127.0.0.1:4201/health | jq
+curl -s http://127.0.0.1:18421/health | jq
 ```
 
 ## Config (env vars)
@@ -39,8 +39,8 @@ curl -s http://127.0.0.1:4201/health | jq
 | Env | Default | Purpose |
 |---|---|---|
 | `WMEM_UPSTREAM_HOST` | `127.0.0.1` | upstream hostname/IP |
-| `WMEM_UPSTREAM_PORT` | `4200` | upstream wmem API port |
-| `WMEM_OUTBOX_PORT` | `4201` | local daemon listen port |
+| `WMEM_UPSTREAM_PORT` | `18420` | upstream wmem API port |
+| `WMEM_OUTBOX_PORT` | `18421` | local daemon listen port |
 | `WMEM_OUTBOX_BIND` | `127.0.0.1` | listen interface |
 | `WMEM_OUTBOX_DB` | `~/.local/share/wmem/outbox.db` | sqlite path |
 | `WMEM_OUTBOX_TICK_S` | `5` | drain interval (sec) |
@@ -65,7 +65,7 @@ curl -s http://127.0.0.1:4201/health | jq
 
 ### Passthrough
 
-Everything else is forwarded to upstream :4200.
+Everything else is forwarded to upstream :18420.
 
 ## Smoke test
 
@@ -88,11 +88,11 @@ See spec §6 for full catalog. Key ones:
 
 This daemon is the *write-side* counterpart to the local read-only wmem mirror.
 Combined: replicas run a read-only mirror for fast offline reads + this daemon for
-write-with-buffer. Upstream :4200 remains the single canonical writer (enforced by
+write-with-buffer. Upstream :18420 remains the single canonical writer (enforced by
 the isMaster gate in upstream's server.mjs).
 
 Per wmem multi-instance recovery sequence:
 - PR-D (this) lands the daemon
-- PR-E will repoint each replica's `.mcp.json` from `localhost:4200` (direct upstream) to
-  `localhost:4201` (this daemon). One replica at a time, 1-day soak between.
+- PR-E will repoint each replica's `.mcp.json` from `localhost:18420` (direct upstream) to
+  `localhost:18421` (this daemon). One replica at a time, 1-day soak between.
 - PR-F will set up rsync timer for the read-only mirror.

@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 // smoke.mjs — end-to-end test harness for wmem-outbox.
 //
-// Requires: upstream wmem at WMEM_UPSTREAM_HOST:4200, daemon running locally.
+// Requires: upstream wmem at WMEM_UPSTREAM_HOST:18420, daemon running locally.
 // Tests:
 //   1. health endpoint OK + upstream_reachable=true
-//   2. passthrough: mail send via :4201 lands on upstream
+//   2. passthrough: mail send via :18421 lands on upstream
 //   3. buffer: stop upstream → send → assert 202+buffered
 //   4. drain: start upstream → wait → assert outbox empties
 //
 // CAUTION: step 3-4 stop+start a real upstream service. Only run on a box where
 // you can sudo systemctl wmem.service.
 
-const DAEMON = process.env.WMEM_OUTBOX_URL ?? 'http://127.0.0.1:4201';
-const UPSTREAM_URL = process.env.WMEM_UPSTREAM_URL    ?? 'http://127.0.0.1:4200';
+const DAEMON = process.env.WMEM_OUTBOX_URL ?? 'http://127.0.0.1:18421';
+const UPSTREAM_URL = process.env.WMEM_UPSTREAM_URL    ?? 'http://127.0.0.1:18420';
 const SSH_UPSTREAM = process.env.SSH_UPSTREAM         ?? null; // 'user@upstream' if remote
 const SKIP_DESTRUCTIVE = process.env.SMOKE_SKIP_DESTRUCTIVE === '1';
 
@@ -47,7 +47,7 @@ async function step1_health() {
 }
 
 async function step2_passthrough() {
-  console.log('\n[2] passthrough: send mail via :4201');
+  console.log('\n[2] passthrough: send mail via :18421');
   const ts = Date.now();
   const subject = `outbox-smoke-passthrough-${ts}`;
   const r = await postJSON(`${DAEMON}/api/mail/send`, {

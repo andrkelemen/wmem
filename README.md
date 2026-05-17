@@ -172,11 +172,42 @@ Run one canonical master + N read-only mirrors without forking the dataset.
 - **Role gate** — every wmem instance stamps itself `master` / `mirror` / `unknown` at first boot (default `master` for single-user; override `WMEM_ROLE=mirror` on follower boxes). Non-master writes get `403 wmem_role_not_master`.
 - **`/api/wmem/role`** — clients check before writing; surfaces hostname + set-by metadata.
 - **`POST /api/write` dispatcher** — single endpoint covering 22 admin ops (projects, sessions, personality core/traits, memory share). One server-side allowlist, one gate, no per-op route sprawl.
-- **`wmem-outbox` daemon** — local proxy at `:4201`. MCP/scripts post writes to it instead of straight upstream. Forwards while master reachable, buffers to local SQLite when not, drains on reconnect with exponential backoff + dead-letter. Survives upstream outages without losing writes.
+- **`wmem-outbox` daemon** — local proxy at `:18421`. MCP/scripts post writes to it instead of straight upstream. Forwards while master reachable, buffers to local SQLite when not, drains on reconnect with exponential backoff + dead-letter. Survives upstream outages without losing writes.
 
 Library-mode users see no change — `master` is auto-stamped, writes work as before. Multi-instance topologies opt in by setting `WMEM_ROLE=mirror` on followers and running `modules/wmem-outbox/install/install.sh` on each.
 
 See `modules/wmem-outbox/README.md` and `migrations/0010_wmem_role.sql`.
+
+## Configuration
+
+### Ports
+
+| What | Default | Set via |
+|------|---------|---------|
+| HTTP server (`node server.mjs`) | `18420` | `PORT=` env, or `port` in `wmem.config.json` |
+| Outbox daemon listen | `18421` | `WMEM_OUTBOX_PORT=` env, or `outboxPort` in `wmem.config.json` |
+| Outbox → upstream | `127.0.0.1:18420` | `WMEM_UPSTREAM_HOST=` + `WMEM_UPSTREAM_PORT=` env, or `upstreamHost` + `upstreamPort` in config |
+
+Defaults sit at `18420/18421` to avoid collision with Angular CLI (`4200`), Vite (`5173`), and other common dev ports.
+
+**Interactive port picker** — probes candidates, prompts if taken, writes `wmem.config.json`:
+
+```bash
+node scripts/configure-ports.mjs                 # interactive: probe + prompt
+node scripts/configure-ports.mjs --port 19420    # non-interactive
+node scripts/configure-ports.mjs --print         # show resolved config
+```
+
+`wmem.config.json` is gitignored (per-machine). `wmem.config.example.json` ships as the template. Env vars always win over the file, which always wins over the default.
+
+### Other env vars
+
+| Var | Purpose | Default |
+|-----|---------|---------|
+| `MEMORY_DB` | SQLite DB path | `./data/memory.db` |
+| `WMEM_TOKEN_FILE` | Bearer-auth token file path | `./.wmem-token` (auth disabled if file missing) |
+| `WMEM_ROLE` | Force role `master`/`mirror`/`unknown` at boot | auto-detect → `master` for single-user |
+| `WMEM_OUTBOX_*` | Outbox tuning (tick, batch, backoff, dead-letter) | see `modules/wmem-outbox/README.md` |
 
 ## Architecture
 

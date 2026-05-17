@@ -24,7 +24,7 @@ All notable changes to wmem are documented here. Format loosely based on
   return `404` with the full `known_ops` list. All ops go through the
   isMaster gate.
 - **`modules/wmem-outbox/` — local proxy daemon** for offline-tolerant
-  writes. Sits at `localhost:4201`, forwards requests to upstream wmem
+  writes. Sits at `localhost:18421`, forwards requests to upstream wmem
   master, buffers to local SQLite when master unreachable (5xx or transport
   failure), drains on reconnect with exponential backoff + dead-letter after
   12 retries. Idempotent against server-side dedup (200 `deduped:true` or
@@ -50,7 +50,7 @@ SQLite) get a transparent default: `master` is auto-stamped, writes work as
 before, the dispatcher is just additional surface. Multi-instance operators
 get a real shape: stamp one box as `master`, all others as `mirror`, each
 non-master runs `wmem-outbox` against the master, MCP clients point at
-their local `:4201` and never have to think about upstream availability.
+their local `:18421` and never have to think about upstream availability.
 
 ### Refs
 
