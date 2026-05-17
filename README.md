@@ -166,6 +166,49 @@ Named documents per personality (identity notes, preferences, style guides). Sto
 
 Mark as `always_load: true` → injected into L1 every session.
 
+### Multi-Instance Safety (v1.2)
+Run one canonical master + N read-only mirrors without forking the dataset.
+
+- **Role gate** — every wmem instance stamps itself `master` / `mirror` / `unknown` at first boot (default `master` for single-user; override `WMEM_ROLE=mirror` on follower boxes). Non-master writes get `403 wmem_role_not_master`.
+- **`/api/wmem/role`** — clients check before writing; surfaces hostname + set-by metadata.
+- **`POST /api/write` dispatcher** — single endpoint covering 22 admin ops (projects, sessions, personality core/traits, memory share). One server-side allowlist, one gate, no per-op route sprawl.
+- **`wmem-outbox` daemon** — local proxy at `:18421`. MCP/scripts post writes to it instead of straight upstream. Forwards while master reachable, buffers to local SQLite when not, drains on reconnect with exponential backoff + dead-letter. Survives upstream outages without losing writes.
+
+Library-mode users see no change — `master` is auto-stamped, writes work as before. Multi-instance topologies opt in by setting `WMEM_ROLE=mirror` on followers and running `modules/wmem-outbox/install/install.sh` on each.
+
+See `modules/wmem-outbox/README.md` and `migrations/0010_wmem_role.sql`.
+
+## Configuration
+
+### Ports
+
+| What | Default | Set via |
+|------|---------|---------|
+| HTTP server (`node server.mjs`) | `18420` | `PORT=` env, or `port` in `wmem.config.json` |
+| Outbox daemon listen | `18421` | `WMEM_OUTBOX_PORT=` env, or `outboxPort` in `wmem.config.json` |
+| Outbox → upstream | `127.0.0.1:18420` | `WMEM_UPSTREAM_HOST=` + `WMEM_UPSTREAM_PORT=` env, or `upstreamHost` + `upstreamPort` in config |
+
+Defaults sit at `18420/18421` to avoid collision with Angular CLI (`4200`), Vite (`5173`), and other common dev ports.
+
+**Interactive port picker** — probes candidates, prompts if taken, writes `wmem.config.json`:
+
+```bash
+node scripts/configure-ports.mjs                 # interactive: probe + prompt
+node scripts/configure-ports.mjs --port 19420    # non-interactive
+node scripts/configure-ports.mjs --print         # show resolved config
+```
+
+`wmem.config.json` is gitignored (per-machine). `wmem.config.example.json` ships as the template. Env vars always win over the file, which always wins over the default.
+
+### Other env vars
+
+| Var | Purpose | Default |
+|-----|---------|---------|
+| `MEMORY_DB` | SQLite DB path | `./data/memory.db` |
+| `WMEM_TOKEN_FILE` | Bearer-auth token file path | `./.wmem-token` (auth disabled if file missing) |
+| `WMEM_ROLE` | Force role `master`/`mirror`/`unknown` at boot | auto-detect → `master` for single-user |
+| `WMEM_OUTBOX_*` | Outbox tuning (tick, batch, backoff, dead-letter) | see `modules/wmem-outbox/README.md` |
+
 ## Architecture
 
 ```
@@ -279,22 +322,33 @@ wmem/
 - [x] Import registry with staleness detection
 - [x] Cross-platform support (Linux, macOS, Windows)
 - [x] MIT License
+- [x] **(v1.2)** Multi-instance safety: `wmem_role` table + role gate (writes refused on non-master)
+- [x] **(v1.2)** `GET /api/wmem/role` endpoint for client probes
+- [x] **(v1.2)** `POST /api/write` generic dispatcher (22 ops, server-side allowlist)
+- [x] **(v1.2)** `wmem-outbox` daemon — local proxy with offline buffering + drain on reconnect
+- [x] **(v1.2)** Interactive port picker (`scripts/configure-ports.mjs`) — probe + prompt + write `wmem.config.json`
+- [x] **(v1.2)** Tests: role gate, dispatcher, outbox passthrough/buffer/drain
+- [x] Preference signals aggregation (`aggregatePreferences` in `core/db.mjs`)
+- [x] Batch purge size limit (500/batch under SQLite 999 param cap — `core/doctor.mjs`)
 
-## Pending
+## Roadmap (v1.3+)
 
 - [ ] Mid-session L1 refresh (time-based, every 30min)
-- [ ] Drift supervisor (temporal anchor, capability staleness, fact contradictions)
+- [ ] Drift supervisor (catches mid-session — temporal anchor, capability staleness, fact contradictions; signals already in L1)
 - [ ] Session hooks auto-registration in setup script
-- [ ] Hook-based auto-bookmarking (populate session bookmarks at session end)
-- [ ] Hook-based KG materialization (rebuild graph edges after indexing)
+- [ ] Hook-based auto-bookmarking on session end (table + materializer exist via `reimport`; hook wiring pending)
+- [ ] Hook-based KG materialization (`materializeTopicRelations` exists; hook wiring pending)
 - [ ] L1 pick-up prompt ("you were also working on X in another folder")
-- [ ] Preference signals (aggregation over sentiment, not retrieval)
 - [ ] `wmem personality generate` — interactive personality builder
-- [ ] `personality update` CLI command
-- [ ] Build tools detection in setup script
+- [ ] `personality update` CLI command (create/delete/use exist; update missing)
+- [ ] Build tools detection in setup script (Windows VS Build Tools, macOS Xcode CLI tools)
 - [ ] Plugin architecture for extending wmem
-- [ ] Secret scanning in doctor (`--secrets` flag) — scaffolded via `core/secret-patterns.mjs`, wiring into `doctor` pending
-- [ ] Batch purge size limit (SQLite 999 param cap for large agents)
+- [ ] Secret scanning in doctor (`--secrets` flag) — `core/secret-patterns.mjs` exists and is wired into `memory_amend` previews; wiring into `wmem_doctor` pending
+- [ ] Speaker-attribution surface (`writtenBy` / `about` on ingest path; schema exists in `0004_messages_and_written_by.sql`)
+- [ ] Run `wmem-eval` benchmark and publish retrieval scores in README
+- [ ] npm publish flow (`prepublishOnly`, `.npmignore`, automated version tagging)
+- [ ] `examples/multi-instance-walkthrough.mjs` — runnable demo of master + mirror + outbox topology
+- [ ] CI workflow (GitHub Actions running `npm test` on push + PR)
 
 ## Examples
 

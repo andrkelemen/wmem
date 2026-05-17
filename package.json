@@ -1,7 +1,7 @@
 {
   "name": "wmem",
-  "version": "1.1.0",
-  "description": "Standalone MCP server for AI agent memory continuity. FTS5 search, tiered retrieval, drift detection.",
+  "version": "1.2.0",
+  "description": "Standalone MCP server for AI agent memory continuity. FTS5 search, tiered retrieval, drift detection, multi-instance safety.",
   "type": "module",
   "main": "mcp-server.mjs",
   "bin": {

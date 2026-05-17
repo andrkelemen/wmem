@@ -1,0 +1,27 @@
+[Unit]
+Description=wmem-outbox local proxy daemon (wmem multi-instance PR-D)
+Documentation=https://github.com/andrkelemen/wmem
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node %h/wmem/modules/wmem-outbox/src/server.mjs
+Restart=on-failure
+RestartSec=5
+
+# Defaults — override per-machine via drop-in OR wmem.config.json next to the daemon.
+# Drop-in: ~/.config/systemd/user/wmem-outbox.service.d/local.conf with
+#          [Service]\nEnvironment=WMEM_OUTBOX_PORT=12345 — then daemon-reload.
+Environment=WMEM_UPSTREAM_HOST=127.0.0.1
+Environment=WMEM_UPSTREAM_PORT=18420
+Environment=WMEM_OUTBOX_PORT=18421
+Environment=WMEM_OUTBOX_BIND=127.0.0.1
+Environment=LOG_LEVEL=info
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=wmem-outbox
+
+[Install]
+WantedBy=default.target

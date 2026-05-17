@@ -1,0 +1,7 @@
+{
+  "_comment": "Optional. Copy to wmem.config.json and edit. Env vars (PORT, WMEM_OUTBOX_PORT, WMEM_UPSTREAM_HOST, WMEM_UPSTREAM_PORT) override these. Generate interactively via: node scripts/configure-ports.mjs",
+  "port": 18420,
+  "outboxPort": 18421,
+  "upstreamHost": "127.0.0.1",
+  "upstreamPort": 18420
+}

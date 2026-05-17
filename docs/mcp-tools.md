@@ -268,3 +268,93 @@ Run integrity checks: orphan tags, duplicate chunks, stale sessions, missing has
 
 ### wmem_dedup
 Remove duplicate chunks. Keeps the oldest copy, deletes newer duplicates.
+
+## HTTP API (service mode, v1.2)
+
+When running `node server.mjs` (instead of or alongside the stdio MCP), wmem exposes an HTTP surface. The full endpoint inventory:
+
+### Reads (never gated)
+- `GET /api/search?q=&agent=&type=&limit=` — FTS5 / hybrid search
+- `GET /api/recent?agent=&type=&limit=` — newest-first chunks
+- `GET /api/stats` — DB stats
+- `GET /api/mail/inbox/:agent`, `/api/mail/outbox/:agent`, `/api/mail/thread/:id`, `/api/mail/counts`
+- `GET /api/wmem/role` — current role + writable flag + hostname
+- `GET /health` — liveness probe
+
+### Writes (gated by `wmem_role = master`)
+- `POST /api/ingest` — store chunks
+- `POST /api/amend` — redact-in-place
+- `POST /api/import` — import a file
+- `POST /api/reimport` — re-import a previously imported file
+- `POST /api/preferences/write`, `POST /api/facts/write`
+- `POST /api/capabilities/{add,update,remove}`
+- `POST /api/mail/send`, `POST /api/mail/reply/:id`, `POST /api/mail/read/:id`, `POST /api/mail/unread/:id`
+- `POST /api/write` — generic dispatcher (see below)
+
+### POST /api/write — generic write dispatcher
+
+Single endpoint for write ops that don't have a dedicated REST route. Server-side allowlist controls which ops are valid.
+
+**Request:**
+```json
+{ "op": "namespace.verb", "args": { ... } }
+```
+
+**Success:**
+```json
+{ "ok": true, "op": "...", "result": { ... } }
+```
+
+**Unknown op (404):**
+```json
+{ "error": "unknown_op", "op": "...", "known_ops": [ "...", "...", ... ] }
+```
+
+**Missing op (400):**
+```json
+{ "error": "missing_op", "note": "body must be { op: \"ns.verb\", args: {...} }" }
+```
+
+**Refused on non-master (403):** the role gate fires before the dispatcher.
+
+**Op catalogue (22):**
+
+| Op | Args | Effect |
+|----|------|--------|
+| `memory.amend` | `chunk_id, new_content, reason` | Redact a chunk in place |
+| `memory.share` | `chunk_id` | Flip scope to shared |
+| `memory.personal` | `chunk_id` | Flip scope to private |
+| `project.upsert` | `name, status, summary, pending, shipped, agent, giteaRepo, metadata` | Create/update project |
+| `project.ship` | `name, note` | Mark project shipped |
+| `project.scope.upsert` | `code, name, description` | Register a path-scope |
+| `project.scope.path.upsert` | `scope, platform, pathPrefix` | Bind a path prefix to a scope per platform |
+| `session.file.touch` | `sessionId, path, operation, chunkId` | Record file-touched-during-session |
+| `personality.upsert` | `id, name, role, metadata` | Create/update personality registry row |
+| `personality.delete` | `id` | Remove personality |
+| `personality.enable` | `id, enabled` | Enable/disable personality |
+| `personality.sfw` | `id, sfw` | Set SFW flag |
+| `personality.activate` | `id, caller, reason` | Mark personality active (audited) |
+| `personality.file.set` | `personality, filename, content, alwaysLoad, sortOrder` | Set a personality file |
+| `personality.core.{add,update,delete}` | `personalityId, category, key, content[, locked]` | Manage core (sticky) traits |
+| `personality.trait.{add,update,enable,disable,delete}` | `personalityId, category, key, [content, priority, enabled, confidence]` | Manage soft traits |
+| `personality.trait.promote` | `traitId, category, key, content` | Promote trait → core |
+
+### Bearer auth
+
+When `WMEM_TOKEN_FILE` points at a file containing a token ≥32 chars, all write endpoints (including `/api/write`) require `Authorization: Bearer <token>`. Reads remain unauthenticated. Timing-safe comparison via `crypto.timingSafeEqual`. Auth is **disabled by default** — set the env var to enable.
+
+### Caller identity
+
+`X-Caller: <agent_id>` header on any HTTP request identifies the calling agent for `written_by` attribution and ownership checks. The MCP server stamps it from `WMEM_CALLER` env. Falls back to `NULL` if absent (graceful degradation).
+
+### wmem-outbox endpoints (modules/wmem-outbox/src/server.mjs)
+
+When running an outbox daemon (typically on each non-master host), it exposes its own admin surface alongside the passthrough:
+
+- `GET /health` — `{ ok, upstream_reachable, upstream_role, outbox_pending, outbox_dead_letter, last_drain_ts, last_drain_result }`
+- `GET /role` — cached upstream role
+- `POST /admin/drain` — force a drain tick
+- `GET /admin/outbox` — list pending + dead-letter rows
+- `DELETE /admin/outbox/dead-letter` — purge dead-letter queue
+
+All other paths are forwarded to the upstream master.
