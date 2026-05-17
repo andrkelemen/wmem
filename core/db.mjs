@@ -16,6 +16,7 @@ import { dirname } from 'path';
 import { createHash } from 'crypto';
 import * as childProcess from 'child_process';
 import { generateTags } from './autotag.mjs';
+import { extractQueryFacets, scoreChunkAgainstFacets } from './facets.mjs';
 import { runMigrations } from '../migrations/_runner.mjs';
 import { backfillChunkIdForSession } from './scopes.mjs';
 
@@ -457,9 +458,25 @@ export function vectorSearch(queryEmbedding, { agent, limit = 20 } = {}) {
  * @param {Float32Array} queryEmbedding - Pre-computed embedding (or null to skip vector)
  * @param {object} opts - { agent, limit, ftsWeight, vecWeight }
  */
-export function hybridSearch(query, queryEmbedding, { agent, limit = 20, ftsWeight = 0.6, vecWeight = 0.4, userBoost = 1.5 } = {}) {
+export function hybridSearch(query, queryEmbedding, {
+  agent,
+  limit = 20,
+  ftsWeight = 0.6,
+  vecWeight = 0.4,
+  userBoost = 1.5,
+  facets = null,        // pre-extracted facet bundle; or pass `true` to auto-extract from query
+  facetBoost = 0.6,     // additive weight on facet score (max facet score ≈ 2.3 — time+project+role only; topic/action already in applyTagBoost)
+} = {}) {
   const db = getDb();
   const results = new Map(); // id → { chunk, score }
+
+  // Resolve facets: pass `true` to auto-extract, an object to use as-is, or null/false to skip.
+  let facetBundle = null;
+  if (facets === true) {
+    facetBundle = extractQueryFacets(query, { knownProjects: getKnownProjectNames(db) });
+  } else if (facets && typeof facets === 'object') {
+    facetBundle = facets;
+  }
 
   // Position-based normalization — rank 0 → 1.0, rank N-1 → ~0.
   // Avoids SQLite BM25 (negative rank) and cosine-distance sign confusion:
@@ -494,11 +511,80 @@ export function hybridSearch(query, queryEmbedding, { agent, limit = 20, ftsWeig
     }
   }
 
-  // 3. Sort by combined score, return top results
+  // 3. Optional facet boost — multi-axis pre-filter applied additively on top
+  //    of the hybrid score. Additive (not multiplicative) so facet matches can
+  //    still lift candidates whose position-normalized hybrid score is near
+  //    zero. Not a hard filter, so recall stays safe.
+  if (facetBundle) {
+    const ids = Array.from(results.keys());
+    if (ids.length > 0) {
+      const ctx = buildFacetScoringCtx(db, ids);
+      for (const r of results.values()) {
+        const fs = scoreChunkAgainstFacets(r.chunk, ctx, facetBundle);
+        r.facetScore = fs;
+        r.score = r.score + facetBoost * fs;
+      }
+    }
+  }
+
+  // 4. Sort by combined score, return top results
   return Array.from(results.values())
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
-    .map(r => ({ ...r.chunk, hybridScore: r.score }));
+    .map(r => ({
+      ...r.chunk,
+      hybridScore: r.score,
+      ...(r.facetScore !== undefined ? { facetScore: r.facetScore } : {}),
+    }));
+}
+
+/**
+ * Cached project-name list for facet extraction. Refreshed on each call
+ * (cheap — projects table is small) so newly-named projects route correctly.
+ */
+function getKnownProjectNames(db) {
+  const names = new Set();
+  try {
+    for (const r of db.prepare('SELECT DISTINCT name FROM projects').all()) names.add(r.name);
+  } catch { /* projects table may not exist */ }
+  try {
+    for (const r of db.prepare(
+      'SELECT DISTINCT project_name FROM session_bookmarks WHERE project_name IS NOT NULL'
+    ).all()) names.add(r.project_name);
+  } catch { /* session_bookmarks may not exist */ }
+  return Array.from(names);
+}
+
+/**
+ * Pre-load tags + session-project mapping for a candidate chunk-id set.
+ * One query per facet axis; scoring then runs in-memory.
+ */
+function buildFacetScoringCtx(db, chunkIds) {
+  const placeholders = chunkIds.map(() => '?').join(',');
+
+  const tagRows = db.prepare(
+    `SELECT chunk_id, tag, confidence FROM tags WHERE chunk_id IN (${placeholders})`
+  ).all(...chunkIds);
+  const chunkTagsById = new Map();
+  for (const r of tagRows) {
+    if (!chunkTagsById.has(r.chunk_id)) chunkTagsById.set(r.chunk_id, []);
+    chunkTagsById.get(r.chunk_id).push({ tag: r.tag, confidence: r.confidence });
+  }
+
+  let chunkProjectById = new Map();
+  try {
+    const projRows = db.prepare(`
+      SELECT c.id AS chunk_id, b.project_name
+      FROM chunks c
+      JOIN session_bookmarks b ON b.session_id = c.session_id AND b.agent = c.agent
+      WHERE c.id IN (${placeholders}) AND b.project_name IS NOT NULL
+    `).all(...chunkIds);
+    chunkProjectById = new Map(projRows.map(r => [r.chunk_id, r.project_name]));
+  } catch {
+    // session_bookmarks may not exist in older DBs — facet still works without project.
+  }
+
+  return { chunkTagsById, chunkProjectById };
 }
 
 /**
