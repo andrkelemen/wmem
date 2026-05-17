@@ -17,7 +17,7 @@ export class UpstreamProbe {
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), this.timeoutMs);
-      const res = await fetch(`${this.url}/api/health`, { method: 'GET', signal: ctrl.signal });
+      const res = await fetch(`${this.url}/health`, { method: 'GET', signal: ctrl.signal });
       clearTimeout(t);
       this.state.reachable = res.ok;
     } catch {

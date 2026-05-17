@@ -1,4 +1,4 @@
--- 0011 — wmem_role: identifies this wmem instance as canonical/master vs mirror.
+-- 0010 — wmem_role: identifies this wmem instance as canonical/master vs mirror.
 --
 -- Background: before the multi-instance gate, three boxes ran independent writable wmem
 -- services. Forked memory accumulated for ~3 weeks. Recovery merged the
