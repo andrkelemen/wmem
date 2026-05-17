@@ -17,13 +17,30 @@ surface).
 
 ## Quick Start
 
+### Option A: Claude Code plugin (v1.3+, recommended)
+
+```bash
+claude plugins marketplace add github.com/andrkelemen/wmem
+claude plugins install wmem@wmem
+```
+
+The plugin registers the MCP server on first run via a Setup hook, wires the SessionStart / SessionEnd / PreCompact hooks, ships two skills (`using-wmem`, `wmem-compact-protocol`) that auto-load, and exposes slash commands (`/recall`, `/chunks`, `/projects`, `/wmem-doctor`). Then run the one-time setup to import + index + create a personality:
+
+```bash
+git clone https://github.com/andrkelemen/wmem.git ~/wmem
+cd ~/wmem
+node scripts/setup.mjs --agent myname
+```
+
+### Option B: Standalone (without the plugin)
+
 ```bash
 git clone https://github.com/andrkelemen/wmem.git
 cd wmem
 node scripts/setup.mjs --agent myname
 ```
 
-That's it. The setup script handles everything: npm install, import your CLAUDE.md, index your sessions, create a personality, register the MCP server via `claude mcp add`.
+Same setup script does everything: npm install, import your CLAUDE.md, index your sessions, create a personality, register the MCP server via `claude mcp add`, register the hooks via `~/.claude/settings.json`.
 
 Preview first with `--dry-run`:
 ```bash
