@@ -263,9 +263,28 @@ if (!claudeVersion) {
   }
 }
 
-// ── Step 9: Verify ──────────────────────────────────────
+// ── Step 9: Register session hooks ──────────────────────
 
-step(9, 'Verification');
+step(9, 'Registering session hooks');
+
+const hookSettingsPath = join(claudeDir, 'settings.json');
+
+if (flags.dryRun) {
+  log(`would register SessionStart + SessionEnd hooks in ${hookSettingsPath}`);
+} else {
+  try {
+    const result = run(`node "${join(WMEM_ROOT, 'scripts', 'register-hooks.mjs')}" --settings "${hookSettingsPath}"`, { silent: true });
+    ok('SessionStart + SessionEnd hooks registered');
+    log('  hooks fire on next session: incremental index, preference enqueue, bookmark + KG materialization');
+  } catch (err) {
+    warn('hook registration failed — manual install:');
+    log(`  node ${join(WMEM_ROOT, 'scripts', 'register-hooks.mjs')}`);
+  }
+}
+
+// ── Step 10: Verify ─────────────────────────────────────
+
+step(10, 'Verification');
 
 // Verify DB
 const { getStats } = await import('../core/db.mjs');

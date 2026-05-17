@@ -52,7 +52,7 @@ stage('setup-cleanup-prev-run', () => {
   const m = db.prepare(
     "DELETE FROM messages WHERE from_agent LIKE 'test-mail-%' OR to_agent LIKE 'test-mail-%'",
   ).run();
-  const a = db.prepare("DELETE FROM agents WHERE id LIKE 'test-mail-%'").run();
+  const a = db.prepare("DELETE FROM personalities WHERE id LIKE 'test-mail-%'").run();
   return { messages_cleared: m.changes, agents_cleared: a.changes };
 });
 
@@ -62,7 +62,7 @@ stage('setup-seed-agents', () => {
   }
   const db = getDb();
   const count = db.prepare(
-    "SELECT COUNT(*) AS c FROM agents WHERE id LIKE 'test-mail-%'",
+    "SELECT COUNT(*) AS c FROM personalities WHERE id LIKE 'test-mail-%'",
   ).get().c;
   assert(count === 3, `seeded 3 agents, got ${count}`);
   return { count };
@@ -215,11 +215,11 @@ stage('get-message-not-found-returns-null', () => {
 
 stage('counts-by-agent-includes-test-rows', () => {
   const rows = countsByAgent();
-  const test = rows.filter((r) => r.agent_id?.startsWith('test-mail-'));
+  const test = rows.filter((r) => r.personality_id?.startsWith('test-mail-'));
   assert(test.length === 3, `3 test agents in counts, got ${test.length}`);
-  const bob = test.find((r) => r.agent_id === BOB);
+  const bob = test.find((r) => r.personality_id === BOB);
   assert(bob.inbox_total >= 3, `bob inbox_total >= 3, got ${bob.inbox_total}`);
-  const alice = test.find((r) => r.agent_id === ALICE);
+  const alice = test.find((r) => r.personality_id === ALICE);
   assert(alice.outbox_total >= 2, `alice outbox_total >= 2, got ${alice.outbox_total}`);
   return { test_agents_in_counts: test.length };
 });
@@ -288,7 +288,7 @@ stage('cleanup-test-rows', () => {
   const m = db.prepare(
     "DELETE FROM messages WHERE from_agent LIKE 'test-mail-%' OR to_agent LIKE 'test-mail-%'",
   ).run();
-  const a = db.prepare("DELETE FROM agents WHERE id LIKE 'test-mail-%'").run();
+  const a = db.prepare("DELETE FROM personalities WHERE id LIKE 'test-mail-%'").run();
   return { messages_deleted: m.changes, agents_deleted: a.changes };
 });
 

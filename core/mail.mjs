@@ -42,7 +42,7 @@ export function sendMessage({ from, to, body, subject = null, parentId = null, m
   const db = getDb();
 
   // Agent validation — fail loud on typos
-  const existsAgent = db.prepare('SELECT 1 FROM agents WHERE id = ?');
+  const existsAgent = db.prepare('SELECT 1 FROM personalities WHERE id = ?');
   if (!existsAgent.get(from)) throw new Error(`unknown from_agent: ${from}`);
   if (!existsAgent.get(to))   throw new Error(`unknown to_agent: ${to}`);
 
@@ -203,11 +203,11 @@ export function threadMessages(anyMessageId) {
 
 export function countsByAgent() {
   return getDb().prepare(`
-    SELECT a.id AS agent_id,
+    SELECT a.id AS personality_id,
            COALESCE(inbox.total, 0) AS inbox_total,
            COALESCE(inbox.unread, 0) AS inbox_unread,
            COALESCE(outbox.total, 0) AS outbox_total
-    FROM agents a
+    FROM personalities a
     LEFT JOIN (
       SELECT to_agent, COUNT(*) AS total, SUM(CASE WHEN read = 0 THEN 1 ELSE 0 END) AS unread
       FROM messages GROUP BY to_agent

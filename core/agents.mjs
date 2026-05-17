@@ -8,8 +8,8 @@
  *
  * Terminology:
  *   signal  — tier 1, raw regex extraction, lives in preference_signals
- *   pref    — tier 2, agent-consolidated, lives in agent_preferences
- *   fact    — tier 3, repeated-pref promoted, lives in agent_personality_facts
+ *   pref    — tier 2, agent-consolidated, lives in personality_preferences
+ *   fact    — tier 3, repeated-pref promoted, lives in personality_facts
  */
 
 import { getDb } from './db.mjs';
@@ -19,11 +19,11 @@ import { getDb } from './db.mjs';
 // ───────────────────────────────────────────────────────────
 
 export function listAgents() {
-  return getDb().prepare('SELECT * FROM agents ORDER BY id').all();
+  return getDb().prepare('SELECT * FROM personalities ORDER BY id').all();
 }
 
 export function getAgent(id) {
-  return getDb().prepare('SELECT * FROM agents WHERE id = ?').get(id);
+  return getDb().prepare('SELECT * FROM personalities WHERE id = ?').get(id);
 }
 
 /**
@@ -33,13 +33,13 @@ export function getAgent(id) {
 export function upsertAgent({ id, name, role = null, metadata = null }) {
   const db = getDb();
   const meta = metadata ? JSON.stringify(metadata) : null;
-  const existing = db.prepare('SELECT id FROM agents WHERE id = ?').get(id);
+  const existing = db.prepare('SELECT id FROM personalities WHERE id = ?').get(id);
   if (existing) {
-    db.prepare('UPDATE agents SET name = ?, role = ?, metadata = ? WHERE id = ?')
+    db.prepare('UPDATE personalities SET name = ?, role = ?, metadata = ? WHERE id = ?')
       .run(name, role, meta, id);
     return { id, updated: true };
   }
-  db.prepare('INSERT INTO agents (id, name, role, metadata) VALUES (?, ?, ?, ?)')
+  db.prepare('INSERT INTO personalities (id, name, role, metadata) VALUES (?, ?, ?, ?)')
     .run(id, name, role, meta);
   return { id, created: true };
 }
@@ -50,7 +50,7 @@ export function upsertAgent({ id, name, role = null, metadata = null }) {
 
 /**
  * Write a new preference row. Append-only — multiple calls for the same
- * (agent_id, key) create distinct rows. Tier 3 consolidation merges.
+ * (personality_id, key) create distinct rows. Tier 3 consolidation merges.
  *
  * @param {object} args
  * @param {string} args.agentId - subject of the preference
@@ -70,14 +70,14 @@ export function writePreference({
   const db = getDb();
 
   // Validate agent exists to surface typos early
-  if (!db.prepare('SELECT 1 FROM agents WHERE id = ?').get(agentId)) {
+  if (!db.prepare('SELECT 1 FROM personalities WHERE id = ?').get(agentId)) {
     throw new Error(`unknown agent: ${agentId}`);
   }
 
   const meta = metadata ? JSON.stringify(metadata) : null;
   const res = db.prepare(`
-    INSERT INTO agent_preferences
-      (agent_id, key, value, signal_strength, signal_type, source_chunk_id, metadata)
+    INSERT INTO personality_preferences
+      (personality_id, key, value, signal_strength, signal_type, source_chunk_id, metadata)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(agentId, key, value, signalStrength, signalType, sourceChunkId, meta);
   const id = Number(res.lastInsertRowid);
@@ -85,9 +85,9 @@ export function writePreference({
   const accepted = [];
   if (relations && relations.length) {
     const insertRel = db.prepare(
-      'INSERT OR IGNORE INTO agent_preference_relations (preference_id, object_agent_id) VALUES (?, ?)'
+      'INSERT OR IGNORE INTO personality_preference_relations (preference_id, object_personality_id) VALUES (?, ?)'
     );
-    const hasAgent = db.prepare('SELECT 1 FROM agents WHERE id = ?');
+    const hasAgent = db.prepare('SELECT 1 FROM personalities WHERE id = ?');
     for (const targetId of relations) {
       if (!hasAgent.get(targetId)) continue; // silently skip unknowns
       insertRel.run(id, targetId);
@@ -114,19 +114,19 @@ export function listPreferences({ agentId, signalType, key, objectAgentId, limit
   const where = [];
   const params = [];
 
-  if (agentId) { where.push('p.agent_id = ?'); params.push(agentId); }
+  if (agentId) { where.push('p.personality_id = ?'); params.push(agentId); }
   if (signalType) { where.push('p.signal_type = ?'); params.push(signalType); }
   if (key) { where.push('p.key = ?'); params.push(key); }
 
   let sql = `
     SELECT p.*,
-           (SELECT json_group_array(object_agent_id)
-            FROM agent_preference_relations r
+           (SELECT json_group_array(object_personality_id)
+            FROM personality_preference_relations r
             WHERE r.preference_id = p.id) AS relations_json
-    FROM agent_preferences p
+    FROM personality_preferences p
   `;
   if (objectAgentId) {
-    sql += ` INNER JOIN agent_preference_relations r ON r.preference_id = p.id AND r.object_agent_id = ? `;
+    sql += ` INNER JOIN personality_preference_relations r ON r.preference_id = p.id AND r.object_personality_id = ? `;
     params.push(objectAgentId);
   }
   if (where.length) sql += ' WHERE ' + where.join(' AND ');
@@ -165,7 +165,7 @@ const VALID_VALENCES = new Set(['reinforces', 'contradicts', 'refines']);
  * Write an anchor linking a preference to a chunk of evidence.
  *
  * @param {object} args
- * @param {number} args.preferenceId - agent_preferences.id
+ * @param {number} args.preferenceId - personality_preferences.id
  * @param {number} [args.chunkId] - chunks.id (optional but recommended)
  * @param {string} args.valence - reinforces | contradicts | refines
  * @param {string} [args.annotation] - short why-this-anchors-this line
@@ -176,7 +176,7 @@ export function writeAnchor({ preferenceId, chunkId = null, valence, annotation 
     throw new Error(`invalid valence: ${valence} (must be reinforces | contradicts | refines)`);
   }
   const db = getDb();
-  if (!db.prepare('SELECT 1 FROM agent_preferences WHERE id = ?').get(preferenceId)) {
+  if (!db.prepare('SELECT 1 FROM personality_preferences WHERE id = ?').get(preferenceId)) {
     throw new Error(`unknown preference_id: ${preferenceId}`);
   }
   const res = db.prepare(`
@@ -209,11 +209,11 @@ export function listAnchors({ preferenceId, limit = 20, newestFirst = true } = {
 
 export function writeFact({ agentId, category = null, fact, confidence = 0.5, sourceChunkId = null }) {
   const db = getDb();
-  if (!db.prepare('SELECT 1 FROM agents WHERE id = ?').get(agentId)) {
+  if (!db.prepare('SELECT 1 FROM personalities WHERE id = ?').get(agentId)) {
     throw new Error(`unknown agent: ${agentId}`);
   }
   const res = db.prepare(`
-    INSERT INTO agent_personality_facts (agent_id, category, fact, confidence, source_chunk_id)
+    INSERT INTO personality_facts (personality_id, category, fact, confidence, source_chunk_id)
     VALUES (?, ?, ?, ?, ?)
   `).run(agentId, category, fact, confidence, sourceChunkId);
   return { id: Number(res.lastInsertRowid) };
@@ -223,9 +223,9 @@ export function listFacts({ agentId, category, limit = 100 } = {}) {
   const db = getDb();
   const where = [];
   const params = [];
-  if (agentId) { where.push('agent_id = ?'); params.push(agentId); }
+  if (agentId) { where.push('personality_id = ?'); params.push(agentId); }
   if (category) { where.push('category = ?'); params.push(category); }
-  let sql = 'SELECT * FROM agent_personality_facts';
+  let sql = 'SELECT * FROM personality_facts';
   if (where.length) sql += ' WHERE ' + where.join(' AND ');
   sql += ' ORDER BY confidence DESC, created_at DESC LIMIT ?';
   params.push(limit);
@@ -243,10 +243,10 @@ export function listFacts({ agentId, category, limit = 100 } = {}) {
 export function enqueueReview({ sessionId, agentId = null, chunkCount = null }) {
   const db = getDb();
   db.prepare(`
-    INSERT INTO preference_review_queue (session_id, agent_id, chunk_count, enqueued_at)
+    INSERT INTO preference_review_queue (session_id, personality_id, chunk_count, enqueued_at)
     VALUES (?, ?, ?, unixepoch() * 1000)
     ON CONFLICT(session_id) DO UPDATE SET
-      agent_id = excluded.agent_id,
+      personality_id = excluded.personality_id,
       chunk_count = excluded.chunk_count,
       enqueued_at = excluded.enqueued_at,
       claimed_at = NULL,
