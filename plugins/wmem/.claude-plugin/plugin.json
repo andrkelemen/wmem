@@ -1,0 +1,12 @@
+{
+  "name": "wmem",
+  "description": "Memory + identity + judgment for AI agents. Bundles the wmem MCP server (69 stdio tools + HTTP write dispatcher when run in service mode), lifecycle hooks (session-start L1 inject, session-end index + bookmark + KG materialization, pre-compact preference enqueue), discipline skills (using-wmem, compact-protocol), and slash commands for quick recall.",
+  "version": "1.3.0",
+  "author": {
+    "name": "andrkelemen",
+    "email": "adrkelemen@gmail.com"
+  },
+  "homepage": "https://github.com/andrkelemen/wmem",
+  "license": "MIT",
+  "keywords": ["wmem", "memory", "mcp", "sqlite", "fts5", "personality", "knowledge-graph"]
+}
