@@ -219,9 +219,12 @@ RULES: search before saying "I don't remember"
 
 ## MCP Server (mcp-server.mjs)
 
-28 tools over stdio transport. Registered via `claude mcp add`.
+69 stdio MCP tools across memory, projects, personality, knowledge graph,
+mail, capabilities, and system domains. Registered via `claude mcp add`.
 
-See [MCP Tools Reference](./mcp-tools.md) for the full list.
+See [MCP Tools Reference](./mcp-tools.md) for the full list, plus the
+v1.2 HTTP API (read endpoints + `/api/write` dispatcher) when running
+`server.mjs` in service mode.
 
 ## Multi-Instance Topology (v1.2)
 
