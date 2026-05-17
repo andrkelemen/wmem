@@ -239,14 +239,29 @@ wmem/
 │   └── session-end-hook.sh  ← Claude Code hook: index new content
 │   ├── benchmark-ingest.mjs  ← ingest LongMemEval into wmem DB
 │   └── benchmark-retrieval.mjs ← benchmark retrieval (keyword/expanded/hybrid/full)
-├── mcp-server.mjs           <- MCP server (69 tools, stdio transport)
+├── mcp-server.mjs           <- MCP server (69 stdio tools)
+├── server.mjs               <- HTTP service (read endpoints + 22-op /api/write dispatcher, v1.2)
+├── modules/wmem-outbox/     <- local proxy daemon for multi-instance topologies (v1.2)
 ├── server.mjs               ← HTTP API server (Express, optional)
 ├── capabilities.md          ← what the agent can do (manually maintained)
 ├── LICENSE                  ← MIT
 └── data/                    ← SQLite DB (gitignored)
 ```
 
-## MCP Tools (69)
+## Tools
+
+wmem exposes 69 stdio MCP tools (library mode) and an additional HTTP surface
+when running `server.mjs` (service mode, v1.2+):
+
+- **69 stdio MCP tools** — full inventory below, organised by domain
+- **HTTP read endpoints** — `/api/search`, `/api/recent`, `/api/stats`, `/api/mail/*`, `/api/wmem/role`, `/health`
+- **HTTP write endpoints** — `/api/ingest`, `/api/amend`, `/api/import`, `/api/reimport`, `/api/preferences/write`, `/api/facts/write`, `/api/capabilities/*`, `/api/mail/send`
+- **HTTP dispatcher `/api/write` (22 ops, v1.2)** — `memory.{amend,share,personal}`, `project.{upsert,ship,scope.*}`, `session.file.touch`, `personality.{upsert,delete,enable,sfw,activate,file.set}`, `personality.core.{add,update,delete}`, `personality.trait.{add,update,enable,disable,delete,promote}`
+- **Outbox admin** (when running `modules/wmem-outbox/`) — `/health`, `/role`, `/admin/{drain,outbox,outbox/dead-letter}`
+
+All write endpoints are gated by the role middleware (refuses 403 on non-master instances). See [docs/mcp-tools.md](./docs/mcp-tools.md) for the full HTTP surface.
+
+### MCP stdio tools (69)
 
 | Tool | Description |
 |------|-------------|
@@ -361,7 +376,7 @@ wmem/
 
 - [Architecture](./docs/architecture.md) — system overview, data flow, all layers
 - [Setup Guide](./docs/setup-guide.md) — prerequisites, installation, troubleshooting
-- [MCP Tools Reference](./docs/mcp-tools.md) — all 69 tools with parameters
+- [MCP Tools Reference](./docs/mcp-tools.md) — all 69 stdio tools + v1.2 HTTP API surface
 - [Personalities Guide](./docs/personalities.md) — identity management, templates, shared memory
 - [Search Guide](./docs/search-guide.md) — FTS5 syntax, scopes, snippets, graph queries
 - [Decision Engine](./docs/decision-engine-usage.md) — proactive behavior, salience scoring
