@@ -169,14 +169,20 @@ Tags: `auth`, `debugging`, `deployment`, `decision`, `fix`, `shipped`, `api`, `d
 Auto-generated context loaded on every session start. Zero API cost.
 
 ```
-TEMPORAL ANCHOR: Today, agent age
-PERSONALITY: System prompt + voice + always-load files
-CAPABILITIES: Manually maintained list
-RECENT SESSIONS: Time-windowed compression (2h/6h/18h)
-PROJECTS: Active/shipped/blocked state
+TEMPORAL ANCHOR:       Today, agent age
+PERSONALITY:           System prompt + voice + always-load files
+CAPABILITIES:          Manually maintained list
+RECENT SESSIONS:       Time-windowed compression (2h/6h/18h)
+CROSS-FOLDER PICK-UP:  "you were also working on X in another folder" (v1.3)
+PROJECTS:              Active/shipped/blocked state
 ```
 
 ~1,200 tokens. >95% of context window stays free.
+
+The CROSS-FOLDER PICK-UP section is fed by `session_bookmarks` (written
+on `SessionEnd` by `scripts/session-end-bookmark.mjs`) and surfaces
+parallel work from other directories — same project, shared topics, or
+recent time overlap.
 
 ### Personality Files
 Named documents per personality (identity notes, preferences, style guides). Stored in DB, travel with personality on export.
@@ -370,7 +376,7 @@ All write endpoints are gated by the role middleware (refuses 403 on non-master 
 - [ ] Session hooks auto-registration in setup script
 - [ ] Hook-based auto-bookmarking on session end (table + materializer exist via `reimport`; hook wiring pending)
 - [ ] Hook-based KG materialization (`materializeTopicRelations` exists; hook wiring pending)
-- [ ] L1 pick-up prompt ("you were also working on X in another folder")
+- [x] L1 pick-up prompt ("you were also working on X in another folder")
 - [ ] `wmem personality generate` — interactive personality builder
 - [ ] `personality update` CLI command (create/delete/use exist; update missing)
 - [ ] Build tools detection in setup script (Windows VS Build Tools, macOS Xcode CLI tools)

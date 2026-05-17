@@ -14,7 +14,7 @@
 import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { getRecentSessions, getSessionChunks, getRecent, getStats, getProjects } from '../core/db.mjs';
+import { getRecentSessions, getSessionChunks, getRecent, getStats, getProjects, getLastSession } from '../core/db.mjs';
 import { compressContext, summarizeSession } from '../core/context.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -25,6 +25,7 @@ const ROOT = join(__dirname, '..');
 const args = parseArgs(process.argv.slice(2));
 const agent = args.agent || process.env.WMEM_AGENT || 'default';
 const born = args.born || process.env.WMEM_BORN || null;
+const directory = args.directory || process.env.PWD || process.cwd();
 
 // ── Build L1 block ──────────────────────────────────────
 
@@ -39,7 +40,10 @@ sections.push(buildCapabilities());
 // 3. Recent session context (time-windowed compression)
 sections.push(buildRecentContext(agent));
 
-// 4. Active projects
+// 4. Cross-folder pick-up — "you were also working on X in another folder"
+sections.push(buildCrossFolderActivity(agent, directory));
+
+// 5. Active projects
 sections.push(buildProjects());
 
 // 5. Index stats
@@ -116,6 +120,63 @@ function buildRecentContext(agent) {
     : 'RECENT SESSIONS:\n  No recent sessions indexed.';
 }
 
+function buildCrossFolderActivity(agent, dir) {
+  if (!dir) return null;
+  let result;
+  try {
+    result = getLastSession(agent, { directory: dir });
+  } catch {
+    return null;
+  }
+  if (!result) return null;
+
+  const { current_directory: current, parallel_work: parallel } = result;
+  const lines = [];
+  const now = Date.now();
+
+  if (current && current.ended_at) {
+    const age = ageLabel(now - current.ended_at);
+    const summary = current.summary || (current.recent_chunks?.[0]?.content?.slice(0, 100));
+    lines.push(`  HERE (${shortPath(dir)}, last touch ${age}):`);
+    if (summary) lines.push(`    ${truncate(summary, 180)}`);
+    if (current.project_name) lines.push(`    project: ${current.project_name}`);
+  }
+
+  if (parallel && parallel.length > 0) {
+    lines.push('  ELSEWHERE — you were also working on:');
+    for (const p of parallel.slice(0, 4)) {
+      const age = ageLabel(now - (p.ended_at || p.started_at || now));
+      const summary = p.summary || '(no summary)';
+      const rel = p.relation === 'same_project' ? `same project [${p.project_name}]`
+        : p.relation === 'shared_topics' ? `shared topics (${p.tag_overlap})`
+        : 'recent';
+      lines.push(`    - ${shortPath(p.directory)} (${age}, ${rel})`);
+      if (p.summary) lines.push(`      ${truncate(p.summary, 160)}`);
+    }
+  }
+
+  if (lines.length === 0) return null;
+  return `CROSS-FOLDER PICK-UP:\n${lines.join('\n')}`;
+}
+
+function ageLabel(ms) {
+  if (ms < 3600000) return `${Math.max(1, Math.floor(ms / 60000))}m ago`;
+  if (ms < 86400000) return `${Math.floor(ms / 3600000)}h ago`;
+  return `${Math.floor(ms / 86400000)}d ago`;
+}
+
+function shortPath(p) {
+  if (!p) return '?';
+  const home = process.env.HOME;
+  return home && p.startsWith(home) ? '~' + p.slice(home.length) : p;
+}
+
+function truncate(s, n) {
+  if (!s) return '';
+  const clean = String(s).replace(/\s+/g, ' ').trim();
+  return clean.length > n ? clean.slice(0, n - 1) + '…' : clean;
+}
+
 function buildProjects() {
   try {
     const active = getProjects('active');
@@ -173,6 +234,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--agent' && argv[i + 1]) result.agent = argv[++i];
     else if (argv[i] === '--born' && argv[i + 1]) result.born = argv[++i];
+    else if (argv[i] === '--directory' && argv[i + 1]) result.directory = argv[++i];
   }
   return result;
 }
