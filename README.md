@@ -322,22 +322,33 @@ wmem/
 - [x] Import registry with staleness detection
 - [x] Cross-platform support (Linux, macOS, Windows)
 - [x] MIT License
+- [x] **(v1.2)** Multi-instance safety: `wmem_role` table + role gate (writes refused on non-master)
+- [x] **(v1.2)** `GET /api/wmem/role` endpoint for client probes
+- [x] **(v1.2)** `POST /api/write` generic dispatcher (22 ops, server-side allowlist)
+- [x] **(v1.2)** `wmem-outbox` daemon — local proxy with offline buffering + drain on reconnect
+- [x] **(v1.2)** Interactive port picker (`scripts/configure-ports.mjs`) — probe + prompt + write `wmem.config.json`
+- [x] **(v1.2)** Tests: role gate, dispatcher, outbox passthrough/buffer/drain
+- [x] Preference signals aggregation (`aggregatePreferences` in `core/db.mjs`)
+- [x] Batch purge size limit (500/batch under SQLite 999 param cap — `core/doctor.mjs`)
 
-## Pending
+## Roadmap (v1.3+)
 
 - [ ] Mid-session L1 refresh (time-based, every 30min)
-- [ ] Drift supervisor (temporal anchor, capability staleness, fact contradictions)
+- [ ] Drift supervisor (catches mid-session — temporal anchor, capability staleness, fact contradictions; signals already in L1)
 - [ ] Session hooks auto-registration in setup script
-- [ ] Hook-based auto-bookmarking (populate session bookmarks at session end)
-- [ ] Hook-based KG materialization (rebuild graph edges after indexing)
+- [ ] Hook-based auto-bookmarking on session end (table + materializer exist via `reimport`; hook wiring pending)
+- [ ] Hook-based KG materialization (`materializeTopicRelations` exists; hook wiring pending)
 - [ ] L1 pick-up prompt ("you were also working on X in another folder")
-- [ ] Preference signals (aggregation over sentiment, not retrieval)
 - [ ] `wmem personality generate` — interactive personality builder
-- [ ] `personality update` CLI command
-- [ ] Build tools detection in setup script
+- [ ] `personality update` CLI command (create/delete/use exist; update missing)
+- [ ] Build tools detection in setup script (Windows VS Build Tools, macOS Xcode CLI tools)
 - [ ] Plugin architecture for extending wmem
-- [ ] Secret scanning in doctor (`--secrets` flag) — scaffolded via `core/secret-patterns.mjs`, wiring into `doctor` pending
-- [ ] Batch purge size limit (SQLite 999 param cap for large agents)
+- [ ] Secret scanning in doctor (`--secrets` flag) — `core/secret-patterns.mjs` exists and is wired into `memory_amend` previews; wiring into `wmem_doctor` pending
+- [ ] Speaker-attribution surface (`writtenBy` / `about` on ingest path; schema exists in `0004_messages_and_written_by.sql`)
+- [ ] Run `wmem-eval` benchmark and publish retrieval scores in README
+- [ ] npm publish flow (`prepublishOnly`, `.npmignore`, automated version tagging)
+- [ ] `examples/multi-instance-walkthrough.mjs` — runnable demo of master + mirror + outbox topology
+- [ ] CI workflow (GitHub Actions running `npm test` on push + PR)
 
 ## Examples
 

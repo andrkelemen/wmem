@@ -223,6 +223,82 @@ RULES: search before saying "I don't remember"
 
 See [MCP Tools Reference](./mcp-tools.md) for the full list.
 
+## Multi-Instance Topology (v1.2)
+
+wmem can run as a single local SQLite (library mode) or as a canonical service with read-only mirrors (service mode). The same code supports both.
+
+### Roles
+
+Each wmem instance stamps itself with one of three roles at first boot, recorded in the `wmem_role` singleton table (migration `0010_wmem_role.sql`):
+
+| Role | Accepts writes? | Use |
+|------|-----------------|-----|
+| `master` | yes | the canonical instance — one per dataset |
+| `mirror` | no (refused 403) | read-only replica for fast local reads |
+| `unknown` | no | fail-closed default for uninitialised instances |
+
+Role is resolved in this order at boot:
+1. `WMEM_ROLE` env var (`master` / `mirror`)
+2. Existing row in `wmem_role` table (set previously)
+3. Default `master` (single-user-friendly — only one wmem exists, it IS canonical)
+
+`GET /api/wmem/role` returns the current role plus hostname + set-by metadata. Clients call it before writes to know whether to send writes here or to forward to the master.
+
+### Write gate
+
+A middleware in front of every write endpoint refuses POSTs when `role != master` with `403 wmem_role_not_master`. This is the structural backstop: even if a client misroutes a write to a mirror, the dataset stays single-source. The pattern grew out of a real fork incident in an internal deployment where multiple wmem instances ran writable and accumulated drift over 3 weeks before being detected.
+
+Endpoints under the gate: `/api/ingest`, `/api/amend`, `/api/import`, `/api/reimport`, `/api/preferences/write`, `/api/facts/write`, `/api/capabilities/*`, `/api/mail/send`, `/api/write`.
+
+Reads (`GET /api/search`, `GET /api/recent`, `GET /api/stats`, etc.) are never gated — a mirror can serve reads at full speed.
+
+### Generic write dispatcher
+
+`POST /api/write` is a single endpoint that takes `{ op: "namespace.verb", args: {...} }` and dispatches to a server-side allowlist (`WRITE_DISPATCH` in `server.mjs`). Adding a new write op = one line in the allowlist; clients send the op string rather than learning a new REST route.
+
+22 ops are registered today, covering memory chunk admin, projects, scopes, session-file tracking, and the full personality core/trait CRUD:
+
+```
+memory.amend | memory.share | memory.personal
+project.upsert | project.ship | project.scope.upsert | project.scope.path.upsert
+session.file.touch
+personality.upsert | personality.delete | personality.enable | personality.sfw
+personality.activate | personality.file.set
+personality.core.add | personality.core.update | personality.core.delete
+personality.trait.add | personality.trait.update | personality.trait.enable
+personality.trait.disable | personality.trait.delete | personality.trait.promote
+```
+
+Unknown ops return `404 unknown_op` with the full `known_ops` list, so a caller can discover what's available from a single failed request.
+
+### wmem-outbox daemon
+
+`modules/wmem-outbox/` is a local proxy that sits at `localhost:18421` on each non-master host. MCP clients and scripts post writes to it instead of to the upstream master directly. When the master is reachable it forwards verbatim; when it's not, it buffers writes to a local SQLite outbox and drains on reconnect with exponential backoff and a dead-letter queue.
+
+```
+MCP / script
+   ↓  POST localhost:18421/api/...
+[wmem-outbox]
+   ↓  forward (or buffer if upstream unreachable)
+upstream master :18420
+```
+
+Properties:
+- **Idempotent against server-side dedup**: if a buffered write replays and the master returns `{deduped: true}` or `409`, the row is collapsed off the queue rather than re-tried forever.
+- **Exponential backoff**: failed drain attempts wait `30s * 2^retry_count` before retry; after 12 retries the row moves to dead-letter for manual inspection.
+- **Admin endpoints**: `/health`, `/role`, `/admin/drain`, `/admin/outbox`, `/admin/outbox/dead-letter`.
+- **GET/HEAD requests are never buffered** — reads must come from canonical, never from stale local buffer. If the master is down, reads fail loudly with `503 upstream_unreachable`.
+
+A systemd-user unit ships in `modules/wmem-outbox/install/`. On Windows, register as a Scheduled Task with `LogonType=S4U` (interactive logon types silent-fail when launched from SSH; S4U works reliably).
+
+### Topologies
+
+**Library mode (default)** — single host, single SQLite, role auto-stamps `master`, no outbox. `npm install && npm start`. This is what `setup.mjs` produces.
+
+**Service mode** — `node server.mjs` HTTP API on `:18420`. MCP clients connect over HTTP via `WMEM_HTTP_URL`. Bearer-token auth (`WMEM_TOKEN_FILE`) optional but recommended for shared instances.
+
+**Multi-instance** — one host runs master (`WMEM_ROLE=master`), each replica runs a mirror (`WMEM_ROLE=mirror`) + a wmem-outbox daemon pointed at the master. MCP clients on replicas point at their local `:18421` outbox instead of straight to the master. Writes route through the outbox; the outbox handles offline buffering.
+
 ## Data Flow
 
 ### Session Start

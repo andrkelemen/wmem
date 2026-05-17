@@ -214,3 +214,135 @@ node scripts/personality.mjs export myname myname.json
 # Import on other machine
 node scripts/personality.mjs import myname.json
 ```
+
+## Service Mode (v1.2)
+
+`node mcp-server.mjs` is the stdio MCP for single-user use. For multi-user / multi-machine deployments, run `node server.mjs` and have MCP clients talk to it over HTTP.
+
+### Pick your ports
+
+The server (and the outbox daemon, if you run one) need TCP ports. Defaults are `18420` (server) and `18421` (outbox). To probe availability, pick alternatives, and write a `wmem.config.json`:
+
+```bash
+node scripts/configure-ports.mjs                 # interactive: probe + prompt
+node scripts/configure-ports.mjs --port 19420    # non-interactive
+node scripts/configure-ports.mjs --print         # show resolved config
+```
+
+The script try-binds each candidate port. If the default is in use, it suggests the next free port and prompts (or auto-picks in non-interactive mode). `wmem.config.json` is gitignored; commit `wmem.config.example.json` instead. Environment variables (`PORT`, `WMEM_OUTBOX_PORT`, `WMEM_UPSTREAM_HOST`, `WMEM_UPSTREAM_PORT`) always override the file.
+
+### Start the server
+
+```bash
+node server.mjs
+```
+
+Hit `http://localhost:18420/health` to verify. By default the server stamps itself `master` (single-user-safe) and accepts writes.
+
+### Enable bearer auth (recommended for shared instances)
+
+```bash
+# generate a 32+ char token, drop it in the token file
+openssl rand -hex 32 > .wmem-token
+chmod 600 .wmem-token
+# point the env var at it before starting the server
+WMEM_TOKEN_FILE=./.wmem-token node server.mjs
+```
+
+Clients then need `Authorization: Bearer <token>` on every write. Reads remain unauthenticated.
+
+## Multi-Instance Topology (v1.2)
+
+Run one canonical master + N read-only mirrors without forking the dataset.
+
+### Architecture
+
+```
+master (host A, WMEM_ROLE=master)
+   ↑
+   │ HTTP forward (outbox proxy, with offline buffering)
+   │
+   ├─ mirror (host B, WMEM_ROLE=mirror)
+   │     └─ wmem-outbox on host B :18421 → master :18420
+   │     └─ MCP clients on host B talk to localhost:18421
+   │
+   └─ mirror (host C, ...)
+```
+
+### On the master host
+
+```bash
+WMEM_ROLE=master node server.mjs
+```
+
+That's it. Single-user installs already default to `master`; setting the env explicitly documents the intent.
+
+### On each mirror host
+
+1. Same wmem checkout. Don't run `server.mjs` writable here — set the role:
+
+   ```bash
+   # one-shot to stamp the wmem_role row, then exit
+   WMEM_ROLE=mirror node -e "require('./core/db.mjs').getDb()"
+   ```
+
+   Or just run `server.mjs` once with `WMEM_ROLE=mirror`; the first-boot seeder writes the row.
+
+2. Install the outbox daemon:
+
+   ```bash
+   # Linux (systemd-user)
+   bash modules/wmem-outbox/install/install.sh
+
+   # Windows (Scheduled Task)
+   # see modules/wmem-outbox/README.md — use LogonType=S4U,
+   # NOT Interactive (Interactive silent-fails when launched from SSH).
+   ```
+
+3. Set `WMEM_UPSTREAM_HOST` to the master's hostname/IP (default `127.0.0.1` assumes co-located):
+
+   ```bash
+   # systemd drop-in: ~/.config/systemd/user/wmem-outbox.service.d/upstream.conf
+   [Service]
+   Environment=WMEM_UPSTREAM_HOST=192.168.0.100
+   Environment=WMEM_UPSTREAM_PORT=18420
+   ```
+
+   Then `systemctl --user daemon-reload && systemctl --user restart wmem-outbox`.
+
+4. Point MCP clients at the local outbox:
+
+   ```json
+   {
+     "mcpServers": {
+       "wmem": {
+         "command": "node",
+         "args": ["/path/to/wmem/mcp-server.mjs"],
+         "env": {
+           "WMEM_HTTP_URL": "http://localhost:18421"
+         }
+       }
+     }
+   }
+   ```
+
+5. Verify the path end-to-end:
+
+   ```bash
+   # mirror writes should buffer when master is down, drain on reconnect
+   curl http://localhost:18421/health
+   # { ok: true, upstream_reachable: true, upstream_role: "master", outbox_pending: 0, ... }
+   ```
+
+### Verifying the role gate works
+
+Try writing to a mirror directly (bypassing the outbox):
+
+```bash
+curl -X POST http://mirror-host:18420/api/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"agent":"test","sourceType":"role-gate-check","content":"should refuse"}'
+# 403 { "error": "wmem_role_not_master", "role": "mirror", ... }
+```
+
+That's the structural backstop — even a misconfigured client cannot fork the dataset.
