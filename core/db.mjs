@@ -464,7 +464,7 @@ export function hybridSearch(query, queryEmbedding, {
   ftsWeight = 0.6,
   vecWeight = 0.4,
   userBoost = 1.5,
-  facets = null,        // pre-extracted facet bundle; or pass `true` to auto-extract from query
+  facets = true,        // default on: auto-extract facet bundle from query. Pass an object to inject one, or `false`/`null` to disable.
   facetBoost = 0.6,     // additive weight on facet score (max facet score ≈ 2.3 — time+project+role only; topic/action already in applyTagBoost)
 } = {}) {
   const db = getDb();

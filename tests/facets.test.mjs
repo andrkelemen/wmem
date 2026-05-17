@@ -151,13 +151,12 @@ await stage('facets: facet score surfaces on returned chunk', () => {
     `expected facetScore > 0, got ${apr.facetScore}`);
 });
 
-await stage('facets: omitted facets keep classic hybrid behavior', () => {
+await stage('facets: explicit false disables (keeps classic hybrid behavior)', () => {
   const r = hybridSearch('decided to deploy auth in april 2026', null, {
-    agent: 'facet-test', limit: 5,
+    agent: 'facet-test', limit: 5, facets: false,
   });
-  // Without facets, both chunks have identical FTS scores → no facetScore field at all.
   for (const c of r) {
-    assert.strictEqual(c.facetScore, undefined, 'should not attach facetScore when facets disabled');
+    assert.strictEqual(c.facetScore, undefined, 'should not attach facetScore when facets:false');
   }
 });
 
