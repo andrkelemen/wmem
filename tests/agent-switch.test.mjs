@@ -52,8 +52,8 @@ const BOB   = 'test-switch-bob';
 
 stage('setup-cleanup-prev-run', () => {
   const db = getDb();
-  const c = db.prepare("DELETE FROM capabilities WHERE agent_id LIKE 'test-switch-%'").run();
-  const a = db.prepare("DELETE FROM agents WHERE id LIKE 'test-switch-%'").run();
+  const c = db.prepare("DELETE FROM capabilities WHERE personality_id LIKE 'test-switch-%'").run();
+  const a = db.prepare("DELETE FROM personalities WHERE id LIKE 'test-switch-%'").run();
   __resetForTests();
   delete process.env.WMEM_ADMIN;
   return { capabilities_cleared: c.changes, agents_cleared: a.changes };
@@ -63,7 +63,7 @@ stage('setup-seed-agents', () => {
   upsertAgent({ id: ALICE, name: ALICE });
   upsertAgent({ id: BOB, name: BOB });
   const db = getDb();
-  const count = db.prepare("SELECT COUNT(*) AS c FROM agents WHERE id LIKE 'test-switch-%'").get().c;
+  const count = db.prepare("SELECT COUNT(*) AS c FROM personalities WHERE id LIKE 'test-switch-%'").get().c;
   assert(count === 2, `expected 2 seeded, got ${count}`);
   return { count };
 });
@@ -150,11 +150,11 @@ stage('write-stamps-with-new-caller', () => {
     description: 'integration test capability',
     metadata: { tags: ['test-switch-integration'] },
   });
-  // Verify the row has agent_id = BOB
+  // Verify the row has personality_id = BOB
   const row = getCapability({ agentId: BOB, name: 'test-switch-cap' });
   assert(row !== null, 'capability should exist after add');
-  assert(row.agent_id === BOB, `row should stamp BOB, got ${row.agent_id}`);
-  return { stamped: row.agent_id };
+  assert(row.personality_id === BOB, `row should stamp BOB, got ${row.personality_id}`);
+  return { stamped: row.personality_id };
 });
 
 // ─── bonus: resolveCaller falls through cleanly when no override ──────
@@ -170,8 +170,8 @@ stage('resolve-caller-default-falls-through-to-current', () => {
 
 stage('cleanup', () => {
   const db = getDb();
-  const c = db.prepare("DELETE FROM capabilities WHERE agent_id LIKE 'test-switch-%'").run();
-  const a = db.prepare("DELETE FROM agents WHERE id LIKE 'test-switch-%'").run();
+  const c = db.prepare("DELETE FROM capabilities WHERE personality_id LIKE 'test-switch-%'").run();
+  const a = db.prepare("DELETE FROM personalities WHERE id LIKE 'test-switch-%'").run();
   __resetForTests();
   delete process.env.WMEM_ADMIN;
   return { capabilities_deleted: c.changes, agents_deleted: a.changes };

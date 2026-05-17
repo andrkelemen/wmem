@@ -58,6 +58,13 @@ test('migration runner applies all pending migrations on fresh DB', () => {
     '0001_agent_tables.sql',
     '0002_preference_anchors.sql',
     '0003_project_scopes_and_session_files.sql',
+    '0004_messages_and_written_by.sql',
+    '0005_capabilities.sql',
+    '0006_personality_rename.sql',
+    '0007_drop_legacy_agent_aliases.sql',
+    '0008_personality_core_traits.sql',
+    '0009_personality_switch_audit.sql',
+    '0010_wmem_role.sql',
   ]);
 });
 
@@ -124,7 +131,7 @@ test('writePreference throws on unknown subject agent', () => {
 test('listPreferences filters by agentId', () => {
   const prefs = agents.listPreferences({ agentId: 'architect' });
   assert.ok(prefs.length >= 2);
-  for (const p of prefs) assert.equal(p.agent_id, 'architect');
+  for (const p of prefs) assert.equal(p.personality_id, 'architect');
 });
 
 test('listPreferences filters by objectAgentId via relations join', () => {
@@ -269,7 +276,7 @@ test('anchors cascade-delete when preference is removed', () => {
   agents.writeAnchor({ preferenceId: pref.id, valence: 'reinforces' });
   agents.writeAnchor({ preferenceId: pref.id, valence: 'refines' });
   const d = db.getDb();
-  d.prepare('DELETE FROM agent_preferences WHERE id = ?').run(pref.id);
+  d.prepare('DELETE FROM personality_preferences WHERE id = ?').run(pref.id);
   const remaining = d.prepare('SELECT COUNT(*) c FROM preference_anchors WHERE preference_id = ?').get(pref.id);
   assert.equal(remaining.c, 0);
 });

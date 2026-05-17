@@ -36,8 +36,8 @@ function assert(cond, msg) { if (!cond) throw new Error(msg); }
 // setup — scope to test agents, cleanup any prior run
 stage('setup-cleanup', () => {
   const db = getDb();
-  db.prepare("DELETE FROM capabilities WHERE agent_id LIKE 'test-cap-%'").run();
-  db.prepare("DELETE FROM agents WHERE id LIKE 'test-cap-%'").run();
+  db.prepare("DELETE FROM capabilities WHERE personality_id LIKE 'test-cap-%'").run();
+  db.prepare("DELETE FROM personalities WHERE id LIKE 'test-cap-%'").run();
   return { cleaned: true };
 });
 
@@ -96,7 +96,7 @@ stage('get-carol-iot', () => getCapability({ agentId: CAROL, name: 'iot-switch' 
 
 // 4. list — total, per-agent, per-category
 stage('list-test-scope', () => {
-  const r = listCapabilities({}).filter((c) => c.agent_id?.startsWith('test-cap-'));
+  const r = listCapabilities({}).filter((c) => c.personality_id?.startsWith('test-cap-'));
   assert(r.length === 5, `expected 5 test capabilities, got ${r.length}`);
   return { count: r.length };
 });
@@ -106,14 +106,14 @@ stage('list-carol-only', () => {
   return { count: r.length };
 });
 stage('list-hardware', () => {
-  const r = listCapabilities({ category: 'hardware' }).filter((c) => c.agent_id?.startsWith('test-cap-'));
+  const r = listCapabilities({ category: 'hardware' }).filter((c) => c.personality_id?.startsWith('test-cap-'));
   assert(r.length === 3, `expected 3 hardware caps in test scope, got ${r.length}`);
   return { count: r.length };
 });
 
 // 5. lookup keyword — assertions on count + tier ordering
 stage('lookup-image-gen', () => {
-  const r = lookupCapabilities({ query: 'image generation' }).filter((c) => c.agent_id?.startsWith('test-cap-'));
+  const r = lookupCapabilities({ query: 'image generation' }).filter((c) => c.personality_id?.startsWith('test-cap-'));
   assert(r.length >= 2, `expected ≥2 matches (alice/gpu + bob/api), got ${r.length}`);
   const tiers = r.map((x) => x.tier);
   const primaryIdx = tiers.indexOf('primary');
@@ -124,25 +124,25 @@ stage('lookup-image-gen', () => {
   return { count: r.length, tiers };
 });
 stage('lookup-gpu', () => {
-  const r = lookupCapabilities({ query: 'gpu' }).filter((c) => c.agent_id?.startsWith('test-cap-'));
+  const r = lookupCapabilities({ query: 'gpu' }).filter((c) => c.personality_id?.startsWith('test-cap-'));
   assert(r.length >= 2, `expected ≥2 gpu matches, got ${r.length}`);
   return { count: r.length };
 });
 stage('lookup-voice', () => {
-  const r = lookupCapabilities({ query: 'voice' }).filter((c) => c.agent_id?.startsWith('test-cap-'));
+  const r = lookupCapabilities({ query: 'voice' }).filter((c) => c.personality_id?.startsWith('test-cap-'));
   assert(r.length >= 1, `expected ≥1 voice match, got ${r.length}`);
   return { count: r.length };
 });
 stage('lookup-with-category-filter', () => {
   const r = lookupCapabilities({ query: 'gpu', category: 'hardware' })
-    .filter((c) => c.agent_id?.startsWith('test-cap-'));
+    .filter((c) => c.personality_id?.startsWith('test-cap-'));
   assert(r.length >= 1, `expected ≥1 gpu+hardware match, got ${r.length}`);
   assert(r.every((x) => x.category === 'hardware'), 'category filter failed');
   return { count: r.length };
 });
 stage('lookup-minTier-primary', () => {
   const r = lookupCapabilities({ query: 'gpu', minTier: 'primary' })
-    .filter((c) => c.agent_id?.startsWith('test-cap-'));
+    .filter((c) => c.personality_id?.startsWith('test-cap-'));
   assert(r.length >= 1, `expected ≥1 primary gpu match, got ${r.length}`);
   assert(r.every((x) => x.tier === 'primary'), `minTier filter failed, tiers: ${r.map((x) => x.tier)}`);
   return { count: r.length };
@@ -151,13 +151,13 @@ stage('lookup-minTier-primary', () => {
 // 6. match (v1 stub) — realistic narrative workload must return results
 stage('match-workload-narrative', () => {
   const r = matchCapabilities({ workload: 'I need to generate an image at high resolution' })
-    .filter((c) => c.agent_id?.startsWith('test-cap-'));
+    .filter((c) => c.personality_id?.startsWith('test-cap-'));
   assert(r.length >= 1, `narrative workload should match, got ${r.length}`);
   return { count: r.length, top: r[0]?.name };
 });
 stage('match-workload-short', () => {
   const r = matchCapabilities({ workload: 'voice synthesis' })
-    .filter((c) => c.agent_id?.startsWith('test-cap-'));
+    .filter((c) => c.personality_id?.startsWith('test-cap-'));
   assert(r.length >= 1, `short workload should match, got ${r.length}`);
   return { count: r.length, top: r[0]?.name };
 });
@@ -186,8 +186,8 @@ stage('list-bob-after-remove', () => {
 // cleanup
 stage('cleanup', () => {
   const db = getDb();
-  const c = db.prepare("DELETE FROM capabilities WHERE agent_id LIKE 'test-cap-%'").run();
-  const a = db.prepare("DELETE FROM agents WHERE id LIKE 'test-cap-%'").run();
+  const c = db.prepare("DELETE FROM capabilities WHERE personality_id LIKE 'test-cap-%'").run();
+  const a = db.prepare("DELETE FROM personalities WHERE id LIKE 'test-cap-%'").run();
   return { capabilities_deleted: c.changes, agents_deleted: a.changes };
 });
 

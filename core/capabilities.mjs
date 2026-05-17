@@ -2,17 +2,17 @@
   core/capabilities.mjs — CRUD + lookup for the capabilities registry.
 
   Shape:
-    addCapability    : insert/replace (UNIQUE on agent_id+name)
-    updateCapability : partial update by (agent_id, name)
-    removeCapability : delete by (agent_id, name)
-    getCapability    : single row by (agent_id, name)
+    addCapability    : insert/replace (UNIQUE on personality_id+name)
+    updateCapability : partial update by (personality_id, name)
+    removeCapability : delete by (personality_id, name)
+    getCapability    : single row by (personality_id, name)
     listCapabilities : filtered enumeration
     lookupCapabilities : FTS5 match on name + description + tags (v1 match algorithm)
     matchCapabilities : semantic match stub; falls through to lookupCapabilities
                        for v1. Embedding pipeline is a future enhancement.
     verifyCapability : bump last_verified timestamp
 
-  All writes require an explicit agent_id from the caller (the MCP tool layer
+  All writes require an explicit personality_id from the caller (the MCP tool layer
   stamps it from WMEM_CALLER / session identity). Spoof-impossible by design.
 */
 
@@ -56,7 +56,7 @@ export function addCapability({
   if (!category) throw new Error('category required');
 
   const db = getDb();
-  const existing = db.prepare('SELECT id FROM capabilities WHERE agent_id = ? AND name = ?').get(agentId, name);
+  const existing = db.prepare('SELECT id FROM capabilities WHERE personality_id = ? AND name = ?').get(agentId, name);
   if (existing) {
     db.prepare(`
       UPDATE capabilities
@@ -68,7 +68,7 @@ export function addCapability({
   }
   const result = db.prepare(`
     INSERT INTO capabilities
-      (agent_id, name, category, description, location, version, requires, tier, status, metadata)
+      (personality_id, name, category, description, location, version, requires, tier, status, metadata)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(agentId, name, category, description, location, version, toJson(requires), tier, status, toJson(metadata));
   return { id: result.lastInsertRowid, added: true };
@@ -93,7 +93,7 @@ export function updateCapability({ agentId, name, fields }) {
   if (sets.length === 0) return { updated: false, reason: 'no fields' };
   vals.push(agentId, name);
   const db = getDb();
-  const result = db.prepare(`UPDATE capabilities SET ${sets.join(', ')} WHERE agent_id = ? AND name = ?`).run(...vals);
+  const result = db.prepare(`UPDATE capabilities SET ${sets.join(', ')} WHERE personality_id = ? AND name = ?`).run(...vals);
   return { updated: result.changes > 0 };
 }
 
@@ -104,7 +104,7 @@ export function updateCapability({ agentId, name, fields }) {
 export function removeCapability({ agentId, name }) {
   if (!agentId || !name) throw new Error('agentId and name required');
   const db = getDb();
-  const result = db.prepare('DELETE FROM capabilities WHERE agent_id = ? AND name = ?').run(agentId, name);
+  const result = db.prepare('DELETE FROM capabilities WHERE personality_id = ? AND name = ?').run(agentId, name);
   return { removed: result.changes > 0 };
 }
 
@@ -114,7 +114,7 @@ export function removeCapability({ agentId, name }) {
 export function getCapability({ agentId, name }) {
   if (!agentId || !name) throw new Error('agentId and name required');
   const db = getDb();
-  const row = db.prepare('SELECT * FROM capabilities WHERE agent_id = ? AND name = ?').get(agentId, name);
+  const row = db.prepare('SELECT * FROM capabilities WHERE personality_id = ? AND name = ?').get(agentId, name);
   return hydrate(row);
 }
 
@@ -126,7 +126,7 @@ export function listCapabilities({ agent = null, category = null, status = null,
   const db = getDb();
   const where = [];
   const params = [];
-  if (agent)    { where.push('agent_id = ?'); params.push(agent); }
+  if (agent)    { where.push('personality_id = ?'); params.push(agent); }
   if (category) { where.push('category = ?'); params.push(category); }
   if (status)   { where.push('status = ?');   params.push(status); }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -134,7 +134,7 @@ export function listCapabilities({ agent = null, category = null, status = null,
   const rows = db.prepare(`
     SELECT * FROM capabilities
      ${whereSql}
-     ORDER BY agent_id, name
+     ORDER BY personality_id, name
      LIMIT ?
   `).all(...params);
   return rows.map(hydrate);
@@ -238,7 +238,7 @@ export function verifyCapability({ agentId, name }) {
   const db = getDb();
   const now = Date.now();
   const result = db.prepare(`
-    UPDATE capabilities SET last_verified = ? WHERE agent_id = ? AND name = ?
+    UPDATE capabilities SET last_verified = ? WHERE personality_id = ? AND name = ?
   `).run(now, agentId, name);
   if (result.changes === 0) {
     return { verified: false, error: 'not_found' };
