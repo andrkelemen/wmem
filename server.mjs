@@ -13,8 +13,15 @@
 import express from 'express';
 import { readFileSync } from 'fs';
 import { timingSafeEqual } from 'crypto';
-import { insertChunk, search, getRecent, getStats, getDb } from './core/db.mjs';
+import { insertChunk, search, getRecent, getStats, getDb, amendChunk, shareChunk, markPersonal, upsertProject, shipProject } from './core/db.mjs';
 import { sendMessage, getInbox, getOutbox, getMessage, markRead, markUnread, threadMessages, countsByAgent } from './core/mail.mjs';
+import {
+  upsertPersonality, deletePersonality, setPersonalityEnabled, setPersonalitySfw,
+  setActivePersonality, setPersonalityFile,
+  addCore, updateCore, deleteCore,
+  addTrait, updateTrait, enableTrait, disableTrait, deleteTrait, promoteTraitToCore,
+} from './core/personalities.mjs';
+import { upsertScope, upsertScopePath, touchSessionFile } from './core/scopes.mjs';
 
 // Bearer token auth for write endpoints. Absent token file → auth disabled
 // (soft-fail, for dev flows). Token file path is env-configurable via
@@ -71,6 +78,151 @@ app.use((req, res, next) => {
 app.use((req, res, next) => {
   req.caller = req.header('X-Caller') || null;
   next();
+});
+
+// ── Role gate: this instance must be 'master' to accept writes ──
+//
+// Multi-instance safety. When more than one wmem runs (one canonical + N
+// mirrors), only the master accepts writes. Mirrors refuse with 403 so a
+// misrouted client surfaces the misroute instead of silently forking the
+// dataset.
+//
+// Role is stamped at first boot by migration 0010_wmem_role.sql based on:
+//   - WMEM_ROLE env override (master | mirror | unknown)
+//   - hostname autodetect (your-master-host → master)
+//   - default 'unknown' (writes refused until operator sets role)
+//
+// Clients check GET /api/wmem/role before issuing writes, OR write through a
+// local wmem-outbox daemon which buffers when the master is unreachable.
+function getRole() {
+  try {
+    const row = getDb().prepare('SELECT role FROM wmem_role WHERE id = 1').get();
+    return row?.role ?? 'unknown';
+  } catch { return 'unknown'; }
+}
+
+// First-boot: seed wmem_role if empty. Default 'master' for single-user installs;
+// operators running multi-instance topologies override via WMEM_ROLE=mirror|master
+// before the service starts. The CHECK constraint in the schema prevents typos.
+function seedRoleIfEmpty() {
+  try {
+    const db = getDb();
+    const existing = db.prepare('SELECT role FROM wmem_role WHERE id = 1').get();
+    if (existing) return;
+    const role = process.env.WMEM_ROLE || 'master';
+    const setBy = process.env.WMEM_ROLE ? 'env' : 'default-single-user';
+    db.prepare(`INSERT INTO wmem_role (id, role, hostname, set_at, set_by, notes)
+                VALUES (1, ?, ?, ?, ?, ?)`).run(
+      role,
+      process.env.HOSTNAME || 'unknown',
+      Date.now(),
+      setBy,
+      role === 'master' ? 'auto-seeded; this instance accepts writes' : 'auto-seeded as mirror; writes will 403',
+    );
+    console.log(`[wmem] role seeded: ${role} (via ${setBy})`);
+  } catch (err) {
+    console.warn(`[wmem] role seed failed (migration 0010 may not have run yet): ${err.message}`);
+  }
+}
+seedRoleIfEmpty();
+function isWriteEndpoint(path) {
+  if (!path) return false;
+  if (path.startsWith('/api/ingest')) return true;
+  if (path.startsWith('/api/amend')) return true;
+  if (path.startsWith('/api/import')) return true;
+  if (path.startsWith('/api/reimport')) return true;
+  if (path.startsWith('/api/preferences/write')) return true;
+  if (path.startsWith('/api/facts/write')) return true;
+  if (path.startsWith('/api/capabilities/')) return true;
+  if (path.startsWith('/api/mail/send')) return true;
+  if (path === '/api/write') return true;
+  return false;
+}
+app.use((req, res, next) => {
+  if (req.method !== 'POST' || !isWriteEndpoint(req.path)) return next();
+  const role = getRole();
+  if (role === 'master') return next();
+  return res.status(403).json({
+    error: 'wmem_role_not_master',
+    role,
+    note: 'This wmem instance is not the canonical master. Writes refused. Send to the master instance or route via a wmem-outbox daemon.',
+  });
+});
+
+// GET /api/wmem/role — clients SHOULD check this before sending writes; outbox
+// daemons probe it on a timer to know when the upstream is master-and-writable.
+app.get('/api/wmem/role', (req, res) => {
+  try {
+    const row = getDb().prepare('SELECT * FROM wmem_role WHERE id = 1').get();
+    if (!row) return res.json({ role: 'unknown', writable: false, note: 'wmem_role table empty; service uninitialized' });
+    res.json({
+      role: row.role,
+      writable: row.role === 'master',
+      hostname: row.hostname,
+      set_at: row.set_at,
+      set_by: row.set_by,
+      notes: row.notes,
+    });
+  } catch (err) {
+    res.status(500).json({ role: 'unknown', writable: false, error: err.message });
+  }
+});
+
+// ── POST /api/write — generic write dispatcher ──
+//
+// One endpoint, server-side allowlist. Adding a new write op = one line in
+// WRITE_DISPATCH. The MCP client (or any HTTP caller) just sends
+// { op: "namespace.verb", args: {...} } and the server routes it.
+//
+// All ops here go through the isMaster gate above. Unknown ops return 404
+// with the full known_ops list for diagnosis.
+const WRITE_DISPATCH = {
+  // chunks
+  'memory.amend':              args => amendChunk(args.chunk_id, args.new_content, args.reason),
+  'memory.share':              args => shareChunk(args.chunk_id),
+  'memory.personal':           args => markPersonal(args.chunk_id),
+  // projects
+  'project.upsert':            args => upsertProject(args),
+  'project.ship':              args => shipProject(args.name, args.note),
+  'project.scope.upsert':      args => upsertScope(args),
+  'project.scope.path.upsert': args => upsertScopePath(args),
+  // sessions
+  'session.file.touch':        args => touchSessionFile(args),
+  // personality registry
+  'personality.upsert':        args => upsertPersonality(args),
+  'personality.delete':        args => deletePersonality(args.id),
+  'personality.enable':        args => setPersonalityEnabled(args.id, args.enabled),
+  'personality.sfw':           args => setPersonalitySfw(args.id, args.sfw),
+  'personality.activate':      args => setActivePersonality({ id: args.id, caller: args.caller, reason: args.reason }),
+  'personality.file.set':      args => setPersonalityFile(args.personality, args.filename, args.content, args.alwaysLoad, args.sortOrder),
+  // personality.core
+  'personality.core.add':      args => addCore(args),
+  'personality.core.update':   args => updateCore(args),
+  'personality.core.delete':   args => deleteCore(args),
+  // personality.trait
+  'personality.trait.add':     args => addTrait(args),
+  'personality.trait.update':  args => updateTrait(args),
+  'personality.trait.enable':  args => enableTrait(args),
+  'personality.trait.disable': args => disableTrait(args),
+  'personality.trait.delete':  args => deleteTrait(args),
+  'personality.trait.promote': args => promoteTraitToCore(args),
+};
+
+app.post('/api/write', requireAuth, (req, res) => {
+  const { op, args } = req.body || {};
+  if (typeof op !== 'string') {
+    return res.status(400).json({ error: 'missing_op', note: 'body must be { op: "ns.verb", args: {...} }' });
+  }
+  const fn = WRITE_DISPATCH[op];
+  if (!fn) {
+    return res.status(404).json({ error: 'unknown_op', op, known_ops: Object.keys(WRITE_DISPATCH) });
+  }
+  try {
+    const result = fn(args || {});
+    res.json({ ok: true, op, result });
+  } catch (err) {
+    res.status(500).json({ error: err.message, op });
+  }
 });
 
 // ── POST /api/ingest ──

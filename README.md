@@ -166,6 +166,18 @@ Named documents per personality (identity notes, preferences, style guides). Sto
 
 Mark as `always_load: true` → injected into L1 every session.
 
+### Multi-Instance Safety (v1.2)
+Run one canonical master + N read-only mirrors without forking the dataset.
+
+- **Role gate** — every wmem instance stamps itself `master` / `mirror` / `unknown` at first boot (default `master` for single-user; override `WMEM_ROLE=mirror` on follower boxes). Non-master writes get `403 wmem_role_not_master`.
+- **`/api/wmem/role`** — clients check before writing; surfaces hostname + set-by metadata.
+- **`POST /api/write` dispatcher** — single endpoint covering 22 admin ops (projects, sessions, personality core/traits, memory share). One server-side allowlist, one gate, no per-op route sprawl.
+- **`wmem-outbox` daemon** — local proxy at `:4201`. MCP/scripts post writes to it instead of straight upstream. Forwards while master reachable, buffers to local SQLite when not, drains on reconnect with exponential backoff + dead-letter. Survives upstream outages without losing writes.
+
+Library-mode users see no change — `master` is auto-stamped, writes work as before. Multi-instance topologies opt in by setting `WMEM_ROLE=mirror` on followers and running `modules/wmem-outbox/install/install.sh` on each.
+
+See `modules/wmem-outbox/README.md` and `migrations/0010_wmem_role.sql`.
+
 ## Architecture
 
 ```
