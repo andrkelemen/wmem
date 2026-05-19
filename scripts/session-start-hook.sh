@@ -54,7 +54,9 @@ node scripts/index-sessions.mjs --dir "$SCAN_DIR" --agent "$AGENT" 2>/dev/null
 # 3. Generate L1 block
 BORN_FLAG=""
 [ -n "$BORN" ] && BORN_FLAG="--born $BORN"
-L1=$(node scripts/generate-l1.mjs --agent "$AGENT" $BORN_FLAG 2>/dev/null)
+# CLAUDE_PROJECT_DIR is set by Claude Code; fall back to PWD for standalone use.
+CWD_FOR_L1="${CLAUDE_PROJECT_DIR:-$PWD}"
+L1=$(node scripts/generate-l1.mjs --agent "$AGENT" --directory "$CWD_FOR_L1" $BORN_FLAG 2>/dev/null)
 
 # 4. Prepend personality L1 section if active
 if [ -n "$P_L1" ]; then
