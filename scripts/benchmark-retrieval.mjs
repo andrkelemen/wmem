@@ -19,9 +19,10 @@
  */
 
 import { readFileSync, writeFileSync } from 'fs';
-import { search } from '../core/db.mjs';
+import { search, hybridSearch } from '../core/db.mjs';
 import { expandQuery } from '../core/expander.mjs';
 import { detectSubQueries } from '../core/subquery.mjs';
+import { extractQueryFacets, summarizeFacets } from '../core/facets.mjs';
 
 const args = process.argv.slice(2);
 const dataPath = args.find(a => !a.startsWith('--'));
@@ -172,6 +173,13 @@ for (const q of data) {
     candidates = expandedSearch(q.question, topN);
   } else if (mode === 'full') {
     candidates = await subQuerySearch(q.question, topN);
+  } else if (mode === 'facets') {
+    // PR-I: facet-routed retrieval — expanded keyword candidates + multi-axis
+    // facet boost (topic+action tags, time window, project hint, role hint).
+    // No embedding → exercises pure facet routing on top of FTS.
+    candidates = hybridSearch(expandQuery(q.question), null, {
+      limit: topN, facets: true,
+    });
   } else {
     // hybrid (default)
     candidates = expandedSearch(q.question, topN);
