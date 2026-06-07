@@ -25,7 +25,20 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { insertChunk, search, getRecent, getStats, getDb, upsertProject, getProjects, getProject, shipProject, getRecentSessions, getSessionChunks, hybridSearch, shareChunk, markPersonal, upsertBookmark, getLastSession, getRecentBookmarks, materializeTopicRelations, materializeDirectoryRelations, amendChunk } from './core/db.mjs';
+import { insertChunk, getDb, upsertProject, getProjects, getProject, shipProject, getRecentSessions, getSessionChunks, hybridSearch, shareChunk, markPersonal, upsertBookmark, getLastSession, getRecentBookmarks, materializeTopicRelations, materializeDirectoryRelations, amendChunk } from './core/db.mjs';
+
+// Read backend switches to HTTP when WMEM_HTTP_URL is set, falls through
+// to local db.mjs otherwise. Sync local calls still work because the
+// adapter just returns the raw functions in local mode; HTTP-mode returns
+// Promise-wrapped equivalents that the call sites already `await`.
+import { getReadBackend } from './core/http-adapter.mjs';
+const _readBackend = getReadBackend();
+const { search, getRecent, getStats } = _readBackend;
+const READ_BACKEND_MODE = _readBackend.mode;
+const READ_BACKEND_URL = _readBackend.baseUrl;
+if (READ_BACKEND_MODE === 'http') {
+  console.error(`[wmem] MCP reads routed via WMEM_HTTP_URL=${READ_BACKEND_URL}`);
+}
 import {
   listAgents, getAgent, upsertAgent,
   writePreference, listPreferences,
@@ -956,7 +969,10 @@ function dbHasVectors() {
 async function handleSearch(args) {
   const limit = args.limit || 20;
   const scope = args.scope || 'default';
-  const useHybrid = dbHasVectors() && !args.noHybrid;
+  // Hybrid search uses local vector tables + the embedder process — neither
+  // exists on the HTTP path. When the read backend is remote, force the
+  // BM25/FTS5 fallback (which the remote service implements identically).
+  const useHybrid = READ_BACKEND_MODE === 'local' && dbHasVectors() && !args.noHybrid;
 
   let results;
   if (useHybrid) {
@@ -985,7 +1001,9 @@ async function handleSearch(args) {
       results = search(args.query, { agent: args.agent, sourceType: args.type, scope, limit });
     }
   } else {
-    results = search(args.query, {
+    // `await` is a no-op for local mode (sync function) and unwraps the
+    // fetch Promise in HTTP mode — same call site, both backends.
+    results = await search(args.query, {
       agent: args.agent,
       sourceType: args.type,
       scope,
@@ -1172,8 +1190,8 @@ function handleCapabilities() {
   return { content: [{ type: 'text', text: 'capabilities.md not found. Create it at wmem/capabilities.md.' }] };
 }
 
-function handleRecent(args) {
-  const results = getRecent(args.agent, { limit: args.limit || 10, sourceType: args.type });
+async function handleRecent(args) {
+  const results = await getRecent(args.agent, { limit: args.limit || 10, sourceType: args.type });
   if (results.length === 0) {
     return { content: [{ type: 'text', text: `No recent content for ${args.agent}.` }] };
   }
@@ -1183,8 +1201,8 @@ function handleRecent(args) {
   return { content: [{ type: 'text', text: formatted }] };
 }
 
-function handleStats() {
-  const stats = getStats();
+async function handleStats() {
+  const stats = await getStats();
   return { content: [{ type: 'text', text: JSON.stringify(stats, null, 2) }] };
 }
 
