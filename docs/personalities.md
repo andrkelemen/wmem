@@ -28,6 +28,44 @@ node scripts/personality.mjs list
 
 # Show details
 node scripts/personality.mjs show dev
+
+# Update fields later
+node scripts/personality.mjs update dev --voice "Terse. No hedging." --capabilities "code,test,refactor"
+```
+
+## CLI Commands
+
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `list` | `ls` | Show all personalities (active marked with →) |
+| `use <name>` | `activate` | Activate a personality (takes effect next session) |
+| `create <name> [--template t] [--interactive]` | | Create a new personality. `--interactive` walks through each field with defaults from the template if one is supplied. |
+| `update <name> [flags]` | `edit` | Update fields on an existing personality. Pass any of `--display-name`, `--description`, `--voice`, `--prompt`, `--born`, `--capabilities a,b,c`, `--restrictions a,b,c`. Only fields you pass are touched. |
+| `show [name]` | `info` | Show personality details (defaults to active) |
+| `active` | | Show the active personality |
+| `delete <name>` | `rm` | Delete a personality (memories are preserved — recreate to access them) |
+| `templates` | | List built-in templates with descriptions |
+| `import <file>` | | Import a personality from a JSON file |
+| `export <name> [<file>]` | | Export to JSON (stdout if no file argument) |
+
+### Interactive create
+
+```bash
+node scripts/personality.mjs create dawn --template confidant --interactive
+```
+
+Walks through each field, prefilling defaults from the template when provided. Press Enter on any prompt to accept the default. Requires a TTY — for scripted automation, use flag-based create instead.
+
+### Targeted update
+
+`update` only changes the fields you pass — everything else is left alone. Capabilities and restrictions take a comma-separated list and replace the existing list (they don't append).
+
+```bash
+# Just bump the voice and add a born date
+node scripts/personality.mjs update dev --voice "Calmer. Asks more questions." --born 2026-01-15
+
+# Swap the capability set
+node scripts/personality.mjs update dev --capabilities "code,review,test,refactor,document"
 ```
 
 ## Built-in Templates
