@@ -10,9 +10,14 @@
  */
 
 export const SECRET_PATTERNS = [
-  // OpenAI / Anthropic / other LLM provider keys
-  { name: 'openai_key', regex: /sk-(?:proj-)?[A-Za-z0-9_-]{32,}/g },
-  { name: 'anthropic_key', regex: /sk-ant-[A-Za-z0-9_-]{32,}/g },
+  // OpenAI / Anthropic / other LLM provider keys.
+  // Negative lookbehind prevents matching "sk-" inside a longer word like
+  // "drift-mask-neg-r..." — the leading "sk" must not follow a letter.
+  // Caught as a false-positive class during a real-world scan over a chunk
+  // store where `mask-neg-*` tags were hitting openai_key. The dash- and
+  // non-letter-prefixed cases still match, which is what we want.
+  { name: 'openai_key', regex: /(?<![a-zA-Z])sk-(?:proj-)?[A-Za-z0-9_-]{32,}/g },
+  { name: 'anthropic_key', regex: /(?<![a-zA-Z])sk-ant-[A-Za-z0-9_-]{32,}/g },
 
   // GitHub tokens
   { name: 'github_pat', regex: /\bghp_[A-Za-z0-9]{36}\b/g },
