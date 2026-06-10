@@ -83,10 +83,14 @@ Switch who the agent IS. Each personality has its own memories, voice, capabilit
 ```bash
 node scripts/personality.mjs create dev --template coder
 node scripts/personality.mjs create planner --template architect
-node scripts/personality.mjs use dev        # instant switch
+node scripts/personality.mjs use dev                                # instant switch
+node scripts/personality.mjs update dev --voice "Terse. No hedging." # tweak in place
+node scripts/personality.mjs create dawn --interactive              # guided Q&A
 ```
 
 Built-in templates: **coder**, **architect**, **reviewer**, **writer**, **researcher**, **confidant**.
+
+Eleven commands cover the full lifecycle: `list`, `use`, `create` (with `--template` and/or `--interactive`), `update`, `show`, `active`, `delete`, `templates`, `import`, `export`. See [`docs/personalities.md`](./docs/personalities.md) for the full reference, the JSON export schema, and how personality files / decision config layer on top.
 
 Export/import as JSON. Share personalities between machines.
 
