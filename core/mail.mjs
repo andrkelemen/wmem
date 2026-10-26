@@ -106,7 +106,11 @@ export function replyMessage({ from, parentId, body, subject = null, metadata = 
 // ───────────────────────────────────────────────────────────
 
 export function getInbox(agent, { unreadOnly = false, limit = 100, since = null } = {}) {
-  agent = canonicalAgent(agent);          // reach rows written before #13 was fixed
+  // Correct for every row ONLY because migration 0011 lowered the stored values. On its
+  // own this is a regression: the columns are plain TEXT with no COLLATE NOCASE, so lowering
+  // the question while the stored answer keeps its casing makes 'Aurora' rows unreachable by
+  // ANY spelling — they were at least findable by asking 'Aurora' before. Caught in review.
+  agent = canonicalAgent(agent);
   const db = getDb();
   const where = ['to_agent = ?'];
   const params = [agent];
@@ -124,7 +128,7 @@ export function getInbox(agent, { unreadOnly = false, limit = 100, since = null 
 }
 
 export function getOutbox(agent, { limit = 100 } = {}) {
-  agent = canonicalAgent(agent);          // reach rows written before #13 was fixed
+  agent = canonicalAgent(agent);          // correct because migration 0011 canonicalised the data
   const db = getDb();
   return db.prepare(`
     SELECT id, from_agent, to_agent, subject, body, timestamp, read, read_at, parent_id, metadata
@@ -247,7 +251,7 @@ export function countsByAgent() {
  * @returns {{ unread_count: number, oldest_from: string|null, oldest_ts: number|null }}
  */
 export function pendingForAgent(agent) {
-  agent = canonicalAgent(agent);          // reach rows written before #13 was fixed
+  agent = canonicalAgent(agent);          // correct because migration 0011 canonicalised the data
   if (!agent) throw new Error('agent required');
   const db = getDb();
   const row = db.prepare(`

@@ -44,6 +44,105 @@ const DB_PATH = process.env.MEMORY_DB || './data/memory.db';
 
 let db = null;
 
+
+/**
+ * One-time canonicalisation of every stored agent key: trim + lower.
+ *
+ * #13 fixed the WRITERS. This fixes the DATA, and it has to exist, because the read path
+ * cannot. Review finding, and the regression was mine: messages.from_agent / to_agent are
+ * plain TEXT with no COLLATE NOCASE, so SQLite's `=` is case-sensitive. A row stored as
+ * 'Aurora' WAS reachable by a reader asking 'Aurora'. Canonicalising the lookup lowered the
+ * question while the stored answer kept its casing — so no spelling reached those rows at
+ * all. The population named as beneficiaries was the one population it stranded.
+ *
+ * And createAlias could not repair it: it lower-cases both arguments before its self-check,
+ * so createAlias('Aurora', 'aurora') — the one call that would run the retag — came back
+ * "cannot alias to itself". The repair existed and its only door was locked against the
+ * single case #13 produces. That refusal now explains itself and points here.
+ *
+ * WHY THIS IS NOT A MIGRATION, having first been written as one twice:
+ *   - A .sql migration naming `projects` fails on a fresh database, because that table is
+ *     created lazily at first use and does not exist while migrations run.
+ *   - Dropping to the other six does not help either: the test suite runs the migration
+ *     runner against a BARE database, and chunks, sessions, facts, preference_signals and
+ *     agent_aliases are all created inline in getDb, not by any migration. A migration may
+ *     only touch what migrations created — which here is `messages` alone.
+ * So it belongs after the schema exists, where it can ask what is actually there.
+ *
+ * NOT using COLLATE NOCASE instead: ASCII-only in SQLite, it leaves inconsistent values in
+ * place while hiding them, and GROUP BY agent still reports one operator twice in any query
+ * that does not opt in.
+ *
+ * Guarded by a row in schema_migrations so it runs once per store, and reports per-column
+ * counts, because "you will want to see those eleven rows move rather than assume it".
+ */
+// PARENT FIRST. messages.from_agent / to_agent are `TEXT NOT NULL REFERENCES agents(id)`,
+// so lowering a child while the parent still reads 'Aurora' violates the foreign key — the
+// whole transaction would roll back and this pass would report itself "skipped", silently,
+// on every store that has any real mail. Found by testing against dirty data rather than a
+// fresh database, which is the only way it shows.
+// Resolved at run time, not assumed. Migration 0006 renamed `agents` → `personalities`,
+// and SQLite's ALTER TABLE ... RENAME rewrites referencing foreign keys, so on a current
+// store messages.from_agent / to_agent point at personalities(id) — confirmed with
+// PRAGMA foreign_key_list rather than inferred. Older stores still have `agents`.
+const AGENT_PARENT_CANDIDATES = [['personalities', 'id'], ['agents', 'id']];
+const AGENT_COLUMNS = [
+  ['chunks', 'agent'], ['sessions', 'agent'], ['facts', 'agent'],
+  ['preference_signals', 'agent'], ['projects', 'agent'],
+  ['messages', 'from_agent'], ['messages', 'to_agent'],
+  ['personality_aliases', 'alias'], ['personality_aliases', 'canonical'],
+  ['agent_aliases', 'alias'], ['agent_aliases', 'canonical'],   // pre-0007 stores
+];
+const CANON_MARKER = '0011_canonical_agent_keys.code';
+
+function canonicaliseAgentKeys(db, { quiet = true } = {}) {
+  const done = db.prepare('SELECT 1 FROM schema_migrations WHERE filename = ?').get(CANON_MARKER);
+  if (done) return null;
+
+  const hasTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?");
+  const detail = {};
+
+  // A genuine COLLISION is not a casing fix, it is a merge, and a merge is a decision.
+  // If both 'Aurora' and 'aurora' exist as agent rows, lowering one would either collide on
+  // the primary key or quietly fold two operators' identities together. Refuse, loudly, and
+  // leave the data alone — createAlias is the tool for deliberately joining two names.
+  const AGENT_PARENT = AGENT_PARENT_CANDIDATES.find(([t]) => hasTable.get(t)) || null;
+  if (AGENT_PARENT) {
+    const clashes = db.prepare(`
+      SELECT lower(trim(${AGENT_PARENT[1]})) AS k, COUNT(*) AS n,
+             group_concat(${AGENT_PARENT[1]}, ' | ') AS spellings
+      FROM ${AGENT_PARENT[0]} GROUP BY k HAVING n > 1
+    `).all();
+    if (clashes.length) {
+      console.error('[db] agent-key canonicalisation REFUSED — two agent rows differ only in case:');
+      for (const c of clashes) console.error(`      ${c.spellings}  → both would become "${c.k}"`);
+      console.error('      That is a merge, not a spelling fix. Decide with createAlias, then reopen.');
+      return { total: 0, detail: {}, refused: clashes.map(c => c.spellings) };
+    }
+  }
+
+  const tx = db.transaction(() => {
+    // Parent before children, and defer the FK check so no intermediate state is rejected.
+    db.pragma('defer_foreign_keys = ON');
+    for (const [table, col] of [...(AGENT_PARENT ? [AGENT_PARENT] : []), ...AGENT_COLUMNS]) {
+      if (!hasTable.get(table)) continue;        // absent here is not an error, it is a fact
+      const r = db.prepare(
+        `UPDATE ${table} SET ${col} = lower(trim(${col}))
+          WHERE ${col} IS NOT NULL AND ${col} <> lower(trim(${col}))`
+      ).run();
+      if (r.changes > 0) detail[`${table}.${col}`] = r.changes;
+    }
+    db.prepare('INSERT INTO schema_migrations (filename, applied_at) VALUES (?, ?)').run(CANON_MARKER, Date.now());
+  });
+  tx();
+  const total = Object.values(detail).reduce((a, b) => a + b, 0);
+  if (!quiet || total > 0) {
+    console.error(`[db] canonicalised agent keys: ${total} row${total === 1 ? '' : 's'}`,
+      total > 0 ? JSON.stringify(detail) : '');
+  }
+  return { total, detail };
+}
+
 export function getDb() {
   if (db) return db;
 
@@ -241,6 +340,15 @@ export function getDb() {
   } catch (err) {
     console.error('[db] migration failed:', err.message);
     throw err;
+  }
+
+  // After the schema exists — see the note on canonicaliseAgentKeys for why this cannot be
+  // a migration. Never fatal: a store that will not canonicalise is still a usable store,
+  // and failing to open the database over it would be the worse outcome.
+  try {
+    canonicaliseAgentKeys(db);
+  } catch (err) {
+    console.error('[db] agent-key canonicalisation skipped:', err.message);
   }
 
   return db;
@@ -1295,7 +1403,17 @@ export function createAlias(alias, canonical) {
   } catch { /* personalities table might not exist yet — no conflict */ }
 
   // Cannot alias to itself
-  if (lower === canon) return { created: false, reason: 'cannot alias to itself' };
+  if (lower === canon) {
+    // Review finding: createAlias('Aurora', 'aurora') lands here, because both arguments are
+    // lower-cased before this check — so the one call anyone would reach for to repair a
+    // casing-only split was refused as a self-alias, and the seven-column retag below was
+    // unreachable for the single case #13 produces. Migration 0011 does that repair in the
+    // data, once, for everyone. This now says so instead of being a dead end.
+    const casingOnly = alias !== canonical && lower === canon;
+    return { created: false, reason: casingOnly
+      ? `"${alias}" and "${canonical}" differ only in case or whitespace — that is not an alias, it is one agent stored two ways. Migration 0011 canonicalises every agent column; run it (opening the database applies it) instead of aliasing.`
+      : 'cannot alias to itself' };
+  }
 
   const now = Date.now();
   db.prepare('INSERT OR REPLACE INTO agent_aliases (alias, canonical, created_at) VALUES (?, ?, ?)').run(lower, canon, now);
