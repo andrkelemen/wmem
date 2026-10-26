@@ -3,6 +3,40 @@
 All notable changes to wmem are documented here. Format loosely based on
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.3.0] — 2026-10-26
+
+Release bookkeeping caught up (#31). Nine PRs labelled v1.3 merged between 2026-05-17 and
+2026-06-10 and none of the bookkeeping followed: package.json still read 1.2.0, the newest
+changelog entry predated every v1.3 merge, the only tag in the repo was v1.1.0, and the
+README already advertised the shipped work as v1.3+. A version number that disagrees with
+the README is worse than an absent one, because it gets quoted.
+
+### Added
+- PR-A — SessionStart / SessionEnd hooks and the hook installer.
+- PR-B — personality CLI, including the interactive switcher.
+- PR-E — L1 cross-folder pick-up.
+- PR-F — `wmem_doctor --secrets`, key-shape scanning over chunks.
+- PR-H — Claude Code plugin packaging.
+- PR-I — facet routing (`core/facets.mjs`).
+- #84 — MCP reads route via `WMEM_HTTP_URL` when set.
+
+### Fixed in this release
+- #15 — `wmem_dedup` is a DRY RUN by default and requires `--force` at the CLI, matching
+  `--purge-agent` and `--purge-personality`. And the grouping disagreed with the writer:
+  it ignored `session_id` while `insertChunk` dedups on it deliberately, so it would have
+  deleted exactly the rows the insert path preserves. Measured on a 380,000-chunk store:
+  96,258 chunks across 40,122 groups, about a quarter of the database, every one a false
+  positive.
+- #14 — `wmem_status` reported `import_registry`'s page size as its count (`imports: 10`
+  against 37 rows) and could never report more than ten stale.
+- #13 — agent keys are canonicalised (trim + lower) at `insertChunk` and `upsertSession`.
+  `resolveAgent` lower-cased the alias lookup and returned the raw input on fall-through,
+  so an unusual spelling became a new agent and split one operator's history.
+- #17 — `memory_last_session` returns the rulings a session deliberately banked, printed
+  above the tail of execution, with the tail labelled as not-a-decision.
+- #30 — `capabilities.md` no longer ships seven example lines describing someone's actual
+  house into every clone's hot memory block.
+
 ## [1.2.0] — 2026-05-17
 
 ### Added
