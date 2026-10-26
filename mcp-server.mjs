@@ -25,7 +25,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { insertChunk, getDb, upsertProject, getProjects, getProject, shipProject, getRecentSessions, getSessionChunks, hybridSearch, shareChunk, markPersonal, upsertBookmark, getLastSession, getRecentBookmarks, materializeTopicRelations, materializeDirectoryRelations, amendChunk } from './core/db.mjs';
+import { insertChunk, getDb, upsertProject, getProjects, getProject, shipProject, getRecentSessions, getSessionChunks, hybridSearch, shareChunk, markPersonal, upsertBookmark, getLastSession, getRecentBookmarks, materializeTopicRelations, materializeDirectoryRelations, amendChunk, ALL_SOURCE_TYPES, DELIBERATE_SOURCE_TYPES} from './core/db.mjs';
 
 // Read backend switches to HTTP when WMEM_HTTP_URL is set, falls through
 // to local db.mjs otherwise. Sync local calls still work because the
@@ -115,7 +115,11 @@ const TOOLS = [
       type: 'object',
       properties: {
         agent: { type: 'string', description: 'Which agent this memory belongs to' },
-        sourceType: { type: 'string', description: 'Type: conversation, memory-chunk, identity, scene-digest, observation' },
+        // enum, not prose (review, #17). The vocabulary used to live in this description
+        // while the recall query used its own copy, so a free-typed "decision" landed a
+        // chunk recall could never return and nothing said so at write time.
+        sourceType: { type: 'string', enum: ALL_SOURCE_TYPES,
+          description: `Type. These are DELIBERATE and are what memory_last_session returns as rulings: ${DELIBERATE_SOURCE_TYPES.join(', ')}. The rest arrive automatically: ${ALL_SOURCE_TYPES.filter(t => !DELIBERATE_SOURCE_TYPES.includes(t)).join(', ')}.` },
         content: { type: 'string', description: 'The content to index' },
         sourceId: { type: 'string', description: 'Optional source identifier (session ID, chunk hex, filename)' },
       },
@@ -397,8 +401,13 @@ const TOOLS = [
   },
   {
     name: 'wmem_dedup',
-    description: 'Remove duplicate chunks. Keeps the oldest copy, deletes newer duplicates.',
-    inputSchema: { type: 'object', properties: {} },
+    description: 'Preview duplicate chunks, or remove them with force:true. DRY RUN BY DEFAULT (#15) — returns wouldRemove, groups and a sample without deleting anything. Keeps the oldest copy of each group within a session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        force: { type: 'boolean', description: 'Actually delete. Default false — the preview runs instead.' },
+      },
+    },
   },
   {
     name: 'memory_last_session',
@@ -1474,10 +1483,23 @@ function handleWmemDoctor() {
   return { content: [{ type: 'text', text: lines.join('\n') }] };
 }
 
-function handleWmemDedup() {
-  const result = dedup();
+function handleWmemDedup(args) {
+  const result = dedup({ dryRun: args?.force !== true });
+  // The model-facing path needs the preview renderer too, not just the schema. In a dry run
+  // `deduped` is always 0, so a message keyed on it answers "No duplicates found" while
+  // wouldRemove is 96,258 — #14's defect reintroduced one layer up, on the surface a model
+  // actually reads. It failed safe rather than destructively, which is better, but it still
+  // failed. Caught in review.
+  if (result.dryRun) {
+    const text = result.wouldRemove
+      ? `DRY RUN — would remove ${result.wouldRemove} duplicate chunks across ${result.groups} groups. `
+        + `Nothing deleted. Re-run with force:true to delete.\n`
+        + result.sample.map(g => `  ${g.agent}/${g.source_type}: ${g.copies} copies, keeping id ${g.keeping}`).join('\n')
+      : 'No duplicates found.';
+    return { content: [{ type: 'text', text }] };
+  }
   return { content: [{ type: 'text', text: result.deduped > 0
-    ? `Removed ${result.deduped} duplicates across ${result.groups} groups.`
+    ? `Removed ${result.deduped} duplicate chunks across ${result.groups} groups.`
     : 'No duplicates found.' }] };
 }
 
@@ -1767,10 +1789,23 @@ function handleLastSession(args) {
   if (current.tags.length) lines.push(`  tags: ${current.tags.join(', ')}`);
   if (current.files_touched.length) lines.push(`  files: ${current.files_touched.slice(0, 10).join(', ')}${current.files_touched.length > 10 ? ` (+${current.files_touched.length - 10} more)` : ''}`);
 
+  // #17: the RULINGS print first, because a resuming session acts on the first thing it
+  // reads. A tail printed above a decision is a tail that gets obeyed.
+  if (current.decisions?.length) {
+    lines.push('');
+    lines.push('  DECISIONS BANKED IN THIS SESSION (read these first):');
+    for (const d of current.decisions) {
+      lines.push(`    [${d.source_type}] ${d.content.slice(0, 400).replace(/\n/g, ' ')}`);
+    }
+  } else if (current.decisions_note) {
+    lines.push('');
+    lines.push(`  NO RULINGS BANKED: ${current.decisions_note}`);
+  }
+
   // Recent chunks for context
   if (current.recent_chunks?.length) {
     lines.push('');
-    lines.push('  LAST CONTEXT:');
+    lines.push('  LAST CONTEXT (tail of execution, NOT a decision):');
     for (const chunk of current.recent_chunks) {
       const preview = chunk.content.slice(0, 200).replace(/\n/g, ' ');
       lines.push(`    ${preview}`);
@@ -1940,7 +1975,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'wmem_doctor':
       return handleWmemDoctor();
     case 'wmem_dedup':
-      return handleWmemDedup();
+      return handleWmemDedup(args);
     case 'memory_last_session':
       return handleLastSession(args);
     case 'memory_sessions':

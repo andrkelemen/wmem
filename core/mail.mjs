@@ -20,7 +20,7 @@
  * Anything audit-worthy goes in a separate audit_log table later, not here.
  */
 
-import { getDb } from './db.mjs';
+import { getDb, canonicalAgent} from './db.mjs';
 
 // ───────────────────────────────────────────────────────────
 // send
@@ -39,6 +39,11 @@ import { getDb } from './db.mjs';
  * @returns {{ id: number, threadDepth: number }}
  */
 export function sendMessage({ from, to, body, subject = null, parentId = null, metadata = null }) {
+  // #13, review finding. A row addressed to 'Aurora' is INVISIBLE to a reader asking as
+  // 'aurora' — not mis-filed, gone. Delivery is the subsystem where a silent identity
+  // mismatch costs the most, and it was the one left un-canonicalised.
+  from = canonicalAgent(from);
+  to = canonicalAgent(to);
   const db = getDb();
 
   // Agent validation — fail loud on typos
@@ -84,6 +89,7 @@ export function sendMessage({ from, to, body, subject = null, parentId = null, m
  * @returns {{ id: number, threadDepth: number, to: string }}
  */
 export function replyMessage({ from, parentId, body, subject = null, metadata = null }) {
+  from = canonicalAgent(from);
   if (!from) throw new Error('from required');
   if (parentId == null) throw new Error('parentId required');
   if (!body) throw new Error('body required');
@@ -100,6 +106,11 @@ export function replyMessage({ from, parentId, body, subject = null, metadata = 
 // ───────────────────────────────────────────────────────────
 
 export function getInbox(agent, { unreadOnly = false, limit = 100, since = null } = {}) {
+  // Correct for every row ONLY because migration 0011 lowered the stored values. On its
+  // own this is a regression: the columns are plain TEXT with no COLLATE NOCASE, so lowering
+  // the question while the stored answer keeps its casing makes 'Aurora' rows unreachable by
+  // ANY spelling — they were at least findable by asking 'Aurora' before. Caught in review.
+  agent = canonicalAgent(agent);
   const db = getDb();
   const where = ['to_agent = ?'];
   const params = [agent];
@@ -117,6 +128,7 @@ export function getInbox(agent, { unreadOnly = false, limit = 100, since = null 
 }
 
 export function getOutbox(agent, { limit = 100 } = {}) {
+  agent = canonicalAgent(agent);          // correct because migration 0011 canonicalised the data
   const db = getDb();
   return db.prepare(`
     SELECT id, from_agent, to_agent, subject, body, timestamp, read, read_at, parent_id, metadata
@@ -239,6 +251,7 @@ export function countsByAgent() {
  * @returns {{ unread_count: number, oldest_from: string|null, oldest_ts: number|null }}
  */
 export function pendingForAgent(agent) {
+  agent = canonicalAgent(agent);          // correct because migration 0011 canonicalised the data
   if (!agent) throw new Error('agent required');
   const db = getDb();
   const row = db.prepare(`

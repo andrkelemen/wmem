@@ -20,9 +20,128 @@ import { extractQueryFacets, scoreChunkAgainstFacets } from './facets.mjs';
 import { runMigrations } from '../migrations/_runner.mjs';
 import { backfillChunkIdForSession } from './scopes.mjs';
 
+/**
+ * Source-type vocabulary. ONE list, exported, because there were two and they disagreed.
+ *
+ * Review finding on #17: the rulings query named five types, the memory_ingest tool
+ * description named a different four-plus-one, and `session-summary` was in one and not the
+ * other while `conversation` was in the description and correctly absent from the rulings
+ * list. A literal list that already lives somewhere else is a thing to derive, not restate.
+ *
+ * Worse, and the reason this matters beyond tidiness: FOUR OF THE FIVE DELIBERATE TYPES
+ * HAVE NO WRITE PATH IN THIS REPO. They are reachable only through memory_ingest, where
+ * sourceType is free text — so whether recall can find a ruling depended on a model
+ * free-typing the right string months earlier, and `decision` or `ruling` or `summary`
+ * would land a chunk the query can never return, with nothing at write time saying so.
+ * Exporting the list lets the tool schema carry it as an enum, which is what turns a
+ * convention into a constraint.
+ */
+export const DELIBERATE_SOURCE_TYPES = ['memory-chunk', 'observation', 'scene-digest', 'session-summary', 'identity'];
+export const AUTOMATIC_SOURCE_TYPES = ['conversation', 'note', 'fact', 'directory', 'topic', 'memory-import'];
+export const ALL_SOURCE_TYPES = [...AUTOMATIC_SOURCE_TYPES, ...DELIBERATE_SOURCE_TYPES];
+
 const DB_PATH = process.env.MEMORY_DB || './data/memory.db';
 
 let db = null;
+
+
+/**
+ * One-time canonicalisation of every stored agent key: trim + lower.
+ *
+ * #13 fixed the WRITERS. This fixes the DATA, and it has to exist, because the read path
+ * cannot. Review finding, and the regression was mine: messages.from_agent / to_agent are
+ * plain TEXT with no COLLATE NOCASE, so SQLite's `=` is case-sensitive. A row stored as
+ * 'Aurora' WAS reachable by a reader asking 'Aurora'. Canonicalising the lookup lowered the
+ * question while the stored answer kept its casing — so no spelling reached those rows at
+ * all. The population named as beneficiaries was the one population it stranded.
+ *
+ * And createAlias could not repair it: it lower-cases both arguments before its self-check,
+ * so createAlias('Aurora', 'aurora') — the one call that would run the retag — came back
+ * "cannot alias to itself". The repair existed and its only door was locked against the
+ * single case #13 produces. That refusal now explains itself and points here.
+ *
+ * WHY THIS IS NOT A MIGRATION, having first been written as one twice:
+ *   - A .sql migration naming `projects` fails on a fresh database, because that table is
+ *     created lazily at first use and does not exist while migrations run.
+ *   - Dropping to the other six does not help either: the test suite runs the migration
+ *     runner against a BARE database, and chunks, sessions, facts, preference_signals and
+ *     agent_aliases are all created inline in getDb, not by any migration. A migration may
+ *     only touch what migrations created — which here is `messages` alone.
+ * So it belongs after the schema exists, where it can ask what is actually there.
+ *
+ * NOT using COLLATE NOCASE instead: ASCII-only in SQLite, it leaves inconsistent values in
+ * place while hiding them, and GROUP BY agent still reports one operator twice in any query
+ * that does not opt in.
+ *
+ * Guarded by a row in schema_migrations so it runs once per store, and reports per-column
+ * counts, because "you will want to see those eleven rows move rather than assume it".
+ */
+// PARENT FIRST. messages.from_agent / to_agent are `TEXT NOT NULL REFERENCES agents(id)`,
+// so lowering a child while the parent still reads 'Aurora' violates the foreign key — the
+// whole transaction would roll back and this pass would report itself "skipped", silently,
+// on every store that has any real mail. Found by testing against dirty data rather than a
+// fresh database, which is the only way it shows.
+// Resolved at run time, not assumed. Migration 0006 renamed `agents` → `personalities`,
+// and SQLite's ALTER TABLE ... RENAME rewrites referencing foreign keys, so on a current
+// store messages.from_agent / to_agent point at personalities(id) — confirmed with
+// PRAGMA foreign_key_list rather than inferred. Older stores still have `agents`.
+const AGENT_PARENT_CANDIDATES = [['personalities', 'id'], ['agents', 'id']];
+const AGENT_COLUMNS = [
+  ['chunks', 'agent'], ['sessions', 'agent'], ['facts', 'agent'],
+  ['preference_signals', 'agent'], ['projects', 'agent'],
+  ['messages', 'from_agent'], ['messages', 'to_agent'],
+  ['personality_aliases', 'alias'], ['personality_aliases', 'canonical'],
+  ['agent_aliases', 'alias'], ['agent_aliases', 'canonical'],   // pre-0007 stores
+];
+const CANON_MARKER = '0011_canonical_agent_keys.code';
+
+function canonicaliseAgentKeys(db, { quiet = true } = {}) {
+  const done = db.prepare('SELECT 1 FROM schema_migrations WHERE filename = ?').get(CANON_MARKER);
+  if (done) return null;
+
+  const hasTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?");
+  const detail = {};
+
+  // A genuine COLLISION is not a casing fix, it is a merge, and a merge is a decision.
+  // If both 'Aurora' and 'aurora' exist as agent rows, lowering one would either collide on
+  // the primary key or quietly fold two operators' identities together. Refuse, loudly, and
+  // leave the data alone — createAlias is the tool for deliberately joining two names.
+  const AGENT_PARENT = AGENT_PARENT_CANDIDATES.find(([t]) => hasTable.get(t)) || null;
+  if (AGENT_PARENT) {
+    const clashes = db.prepare(`
+      SELECT lower(trim(${AGENT_PARENT[1]})) AS k, COUNT(*) AS n,
+             group_concat(${AGENT_PARENT[1]}, ' | ') AS spellings
+      FROM ${AGENT_PARENT[0]} GROUP BY k HAVING n > 1
+    `).all();
+    if (clashes.length) {
+      console.error('[db] agent-key canonicalisation REFUSED — two agent rows differ only in case:');
+      for (const c of clashes) console.error(`      ${c.spellings}  → both would become "${c.k}"`);
+      console.error('      That is a merge, not a spelling fix. Decide with createAlias, then reopen.');
+      return { total: 0, detail: {}, refused: clashes.map(c => c.spellings) };
+    }
+  }
+
+  const tx = db.transaction(() => {
+    // Parent before children, and defer the FK check so no intermediate state is rejected.
+    db.pragma('defer_foreign_keys = ON');
+    for (const [table, col] of [...(AGENT_PARENT ? [AGENT_PARENT] : []), ...AGENT_COLUMNS]) {
+      if (!hasTable.get(table)) continue;        // absent here is not an error, it is a fact
+      const r = db.prepare(
+        `UPDATE ${table} SET ${col} = lower(trim(${col}))
+          WHERE ${col} IS NOT NULL AND ${col} <> lower(trim(${col}))`
+      ).run();
+      if (r.changes > 0) detail[`${table}.${col}`] = r.changes;
+    }
+    db.prepare('INSERT INTO schema_migrations (filename, applied_at) VALUES (?, ?)').run(CANON_MARKER, Date.now());
+  });
+  tx();
+  const total = Object.values(detail).reduce((a, b) => a + b, 0);
+  if (!quiet || total > 0) {
+    console.error(`[db] canonicalised agent keys: ${total} row${total === 1 ? '' : 's'}`,
+      total > 0 ? JSON.stringify(detail) : '');
+  }
+  return { total, detail };
+}
 
 export function getDb() {
   if (db) return db;
@@ -223,6 +342,15 @@ export function getDb() {
     throw err;
   }
 
+  // After the schema exists — see the note on canonicaliseAgentKeys for why this cannot be
+  // a migration. Never fatal: a store that will not canonicalise is still a usable store,
+  // and failing to open the database over it would be the worse outcome.
+  try {
+    canonicaliseAgentKeys(db);
+  } catch (err) {
+    console.error('[db] agent-key canonicalisation skipped:', err.message);
+  }
+
   return db;
 }
 
@@ -232,6 +360,7 @@ export function getDb() {
  */
 export function insertChunk({ agent, sourceType, sourceId, sessionId, content, timestamp, metadata }) {
   const db = getDb();
+  agent = canonicalAgent(agent);          // #13 — one spelling per agent, enforced at the door
   const hash = simpleHash(content);
 
   // Dedup check: same content in the same session = true duplicate.
@@ -721,6 +850,7 @@ export function close() {
  * Insert a preference signal. Dedup by agent + subject + context + chunk_id.
  */
 export function insertPreferenceSignal({ agent, domain, subject, context, sentiment, rawText, sessionId, chunkId }) {
+  agent = canonicalAgent(agent);          // #13 — review: canonicalised at 2 of 6 writers, now all 6
   const db = getDb();
   const existing = db.prepare(
     'SELECT id FROM preference_signals WHERE agent = ? AND subject = ? AND context IS NOT DISTINCT FROM ? AND chunk_id = ?'
@@ -789,6 +919,7 @@ export function searchPreferences(query, { agent, domain, limit = 20 } = {}) {
  * Deduplicates by agent + predicate + object.
  */
 export function insertFact({ agent, predicate, object, sourceChunkId, sessionId, timestamp }) {
+  agent = canonicalAgent(agent);          // #13 — review: canonicalised at 2 of 6 writers, now all 6
   const db = getDb();
   const existing = db.prepare(
     'SELECT id FROM facts WHERE agent = ? AND predicate = ? AND object = ?'
@@ -834,6 +965,7 @@ export function getSession(sessionId) {
 
 export function upsertSession({ sessionId, filePath, agent, fileSize, lastByteOffset, messageCount, firstTimestamp, lastTimestamp }) {
   const db = getDb();
+  agent = canonicalAgent(agent);          // #13
   const now = Date.now();
   const existing = db.prepare('SELECT id FROM sessions WHERE session_id = ?').get(sessionId);
 
@@ -915,14 +1047,43 @@ export function getLastSession(agent, { project, directory } = {}) {
   if (!row) return null;
 
   // Get the last few chunks from that session for context
+  // KEPT, not replaced. This is the tail of execution — see the note below.
   const recentChunks = db.prepare(
     'SELECT content, timestamp FROM chunks WHERE session_id = ? AND agent = ? ORDER BY timestamp DESC LIMIT 5'
   ).all(row.session_id, agent);
+
+  // Fixes #17. This function returned ONLY the five newest chunks by timestamp, which in a
+  // long session is the tail of whatever was executing — a tool result, a file write, a
+  // status line. What a resuming session needs is the RULING that changed the work, and a
+  // ruling is usually made early and then acted on for hours. So the one thing recall could
+  // not reach was the decision, and a session resumed after compaction would carry on
+  // executing a plan that had already been overturned.
+  //
+  // No classifier. Grepping prose for "we decided" would be a heuristic that is wrong with
+  // authority, and a wrong memory re-infects every session that reads it. Instead: a ruling
+  // is a chunk SOMEBODY CHOSE TO BANK. Conversation rows arrive by the hundred thousand on
+  // their own; memory-chunk / observation / scene-digest / session-summary / identity rows
+  // exist because a human or a model decided they should. Deliberate writing is the only
+  // honest signal available, and it costs nothing to trust.
+  //
+  // When a session banked nothing, the list comes back EMPTY with a note saying so, rather
+  // than handing back the tail dressed as a decision. An absence that announces itself is
+  // worth more than a plausible substitute, and it puts the incentive in the right place.
+  // vocabulary from DELIBERATE_SOURCE_TYPES — one list, exported, see its note
+  const decisions = db.prepare(`
+    SELECT content, timestamp, source_type FROM chunks
+    WHERE session_id = ? AND agent = ? AND source_type IN (${DELIBERATE_SOURCE_TYPES.map(() => '?').join(',')})
+    ORDER BY timestamp ASC LIMIT 5
+  `).all(row.session_id, agent, ...DELIBERATE_SOURCE_TYPES);
 
   const current = {
     ...row,
     files_touched: row.files_touched ? JSON.parse(row.files_touched) : [],
     tags: row.tags ? JSON.parse(row.tags) : [],
+    decisions,
+    decisions_note: decisions.length
+      ? null
+      : 'nothing was deliberately banked in this session — the context below is the TAIL of execution, not a ruling. Do not read it as a decision.',
     recent_chunks: recentChunks,
   };
 
@@ -1192,14 +1353,37 @@ export function materializeDirectoryRelations() {
 // ── Agent Aliases ───────────────────────────────────────────
 
 /**
+ * Canonical form of an agent key: trimmed, lower-cased.
+ *
+ * Fixes #13. There was no canonicalisation of an agent key anywhere — a grep for
+ * toLowerCase/trim/normali across the identity modules returned nothing — so `Agent-A`,
+ * `agent-a ` and `agent-a` were three different agents writing into three different halves
+ * of one operator's memory. wmem_status on the live store already listed the same operator
+ * three times.
+ *
+ * The failure is silent, it can only be repaired retroactively, and what splits is the
+ * whole history of whoever the key belongs to. One stray WMEM_AGENT with different casing
+ * in a shell profile is the entire distance between working and split.
+ */
+export function canonicalAgent(name) {
+  if (name === null || name === undefined) return name;
+  const canon = String(name).trim().toLowerCase();
+  return canon.length ? canon : name;     // never turn a name into an empty string
+}
+
+/**
  * Resolve an agent name through aliases.
- * If the name has an alias, returns the canonical name. Otherwise returns as-is.
+ * If the name has an alias, returns the canonical name. Otherwise returns the CANONICAL
+ * FORM of the input — not the input. Returning it as-is was the bug: the alias lookup was
+ * lower-cased while the fall-through was not, so any unusual spelling missed the alias
+ * table and was then written verbatim as a brand-new agent.
  */
 export function resolveAgent(name) {
   if (!name) return name;
+  const canon = canonicalAgent(name);
   const db = getDb();
-  const alias = db.prepare('SELECT canonical FROM agent_aliases WHERE alias = ?').get(name.toLowerCase());
-  return alias ? alias.canonical : name;
+  const alias = db.prepare('SELECT canonical FROM agent_aliases WHERE alias = ?').get(canon);
+  return alias ? alias.canonical : canon;
 }
 
 /**
@@ -1219,14 +1403,42 @@ export function createAlias(alias, canonical) {
   } catch { /* personalities table might not exist yet — no conflict */ }
 
   // Cannot alias to itself
-  if (lower === canon) return { created: false, reason: 'cannot alias to itself' };
+  if (lower === canon) {
+    // Review finding: createAlias('Aurora', 'aurora') lands here, because both arguments are
+    // lower-cased before this check — so the one call anyone would reach for to repair a
+    // casing-only split was refused as a self-alias, and the seven-column retag below was
+    // unreachable for the single case #13 produces. Migration 0011 does that repair in the
+    // data, once, for everyone. This now says so instead of being a dead end.
+    const casingOnly = alias !== canonical && lower === canon;
+    return { created: false, reason: casingOnly
+      ? `"${alias}" and "${canonical}" differ only in case or whitespace — that is not an alias, it is one agent stored two ways. Migration 0011 canonicalises every agent column; run it (opening the database applies it) instead of aliasing.`
+      : 'cannot alias to itself' };
+  }
 
   const now = Date.now();
   db.prepare('INSERT OR REPLACE INTO agent_aliases (alias, canonical, created_at) VALUES (?, ?, ?)').run(lower, canon, now);
 
   // Retroactive re-tag: update all chunks and sessions with agent = alias → canonical
-  const chunkChanges = db.prepare('UPDATE chunks SET agent = ? WHERE agent = ?').run(canon, lower).changes;
-  const sessionChanges = db.prepare('UPDATE sessions SET agent = ? WHERE agent = ?').run(canon, lower).changes;
+  // RETROACTIVE REPAIR ACROSS EVERY TABLE THAT HOLDS AN AGENT KEY.
+  //
+  // Review finding: this re-tagged chunks and sessions, left facts, messages,
+  // preference_signals and projects pointing at the old spelling, and reported success —
+  // because `retagged` only counted what it touched. The one tool that can repair a split
+  // identity was itself split, and said it had worked.
+  //
+  // messages is the one with teeth: a row addressed to 'Aurora' is INVISIBLE to a reader
+  // asking as 'aurora', not merely mis-filed. Delivery is the subsystem where a silent
+  // mismatch costs most.
+  const retag = (sql) => { try { return db.prepare(sql).run(canon, lower).changes; } catch { return null; } };
+  const chunkChanges = retag('UPDATE chunks SET agent = ? WHERE agent = ?');
+  const sessionChanges = retag('UPDATE sessions SET agent = ? WHERE agent = ?');
+  const factChanges = retag('UPDATE facts SET agent = ? WHERE agent = ?');
+  const signalChanges = retag('UPDATE preference_signals SET agent = ? WHERE agent = ?');
+  const projectChanges = retag('UPDATE projects SET agent = ? WHERE agent = ?');
+  const mailFromChanges = retag('UPDATE messages SET from_agent = ? WHERE from_agent = ?');
+  const mailToChanges = retag('UPDATE messages SET to_agent = ? WHERE to_agent = ?');
+  // A table that does not exist on this schema version returns null rather than 0, so
+  // "nothing to repair" and "never looked" stay distinguishable in the report.
 
   return { created: true, alias: lower, canonical: canon, retagged: { chunks: chunkChanges, sessions: sessionChanges } };
 }
@@ -1314,7 +1526,7 @@ export function upsertProject({ name, status, summary, pending, shipped, agent, 
   } else {
     db.prepare(
       'INSERT INTO projects (name, status, started, last_touched, summary, pending, shipped, agent, gitea_repo, metadata) VALUES (?,?,?,?,?,?,?,?,?,?)'
-    ).run(name, status || 'active', new Date().toISOString(), now, summary || '', pending || '', shipped || '', agent || '', giteaRepo || '', metadata ? JSON.stringify(metadata) : null);
+    ).run(name, status || 'active', new Date().toISOString(), now, summary || '', pending || '', shipped || '', canonicalAgent(agent) || '', giteaRepo || '', metadata ? JSON.stringify(metadata) : null);
     return { created: true, name };
   }
 }
