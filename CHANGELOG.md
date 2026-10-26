@@ -3,6 +3,39 @@
 All notable changes to wmem are documented here. Format loosely based on
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.3.0-b] — 2026-10-26 — "v1.3b", documentation
+
+The README described an install that no longer exists and a roadmap that was wrong in both
+directions.
+
+### Changed
+- **Quick Start is one command.** It presented two paths as equals — "install the plugin,
+  then clone the repo and run setup" beside "clone the repo and run setup" — which is one
+  installer wearing two instructions. Now `npx wmem init`, with the plugin and the clone as
+  variations beneath it, and `wmem doctor --hooks` as the step that follows, because hooks
+  only fire on the *next* session and "registered" is not "fired".
+- **The CLI is documented.** `wmem`, `wmem init`, `wmem doctor`, `wmem hooks`, `wmem help`
+  existed as of v1.3a and appeared nowhere.
+- **Cross-platform is stated plainly.** The hooks are node rather than shell, so Windows
+  works; previously they were bash files that shelled out to python3 and silently did
+  nothing there.
+- **Roadmap de-staled.** It still listed as pending: hook auto-registration, hook-based
+  bookmarking, KG materialization, and `--secrets` — all shipped. It listed nothing found
+  since. Independent-agents-on-one-instance is now on it with the honest blocker written
+  down: per-request identity exists on the HTTP path and reads route over it, but writes go
+  direct to SQLite in-process, and the HTTP path trusts `X-Caller` without checking it
+  against the env anchor.
+- **Multi-agent configuration is explained** where the env vars are: one `WMEM_CALLER` per
+  MCP server entry, because stdio is process-per-connection so the variable *is* the session
+  identity.
+
+### Added
+- **"Two behaviours that surprise people."** Dedup is a dry run by default, with the reason
+  — the preview is what revealed that dedup grouped without `session_id` while `insertChunk`
+  dedups with it, 96,258 false positives on a live store. And `memory_last_session` returns
+  rulings above the tail, with the tail labelled, and an empty list that says so when a
+  session banked nothing.
+
 ## [1.3.0-a] — 2026-10-26 — "v1.3a", the install release
 
 Download and run. One command from nothing to a working install, and the install tells the
