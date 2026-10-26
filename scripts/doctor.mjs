@@ -58,10 +58,24 @@ if (command === '--status' || command === 'status') {
   }
 
 } else if (command === '--dedup' || command === 'dedup') {
-  const result = dedup();
-  console.log(result.deduped > 0
-    ? `removed ${result.deduped} duplicates across ${result.groups} groups`
-    : 'no duplicates found');
+  // #15: this deleted on sight. It now shows the plan and waits for --force, matching
+  // --purge-agent and --purge-personality, which have always required it.
+  const force = process.argv.includes('--force');
+  const result = dedup({ dryRun: !force });
+  if (result.dryRun) {
+    if (!result.wouldRemove) {
+      console.log('no duplicates found');
+    } else {
+      console.log(`DRY RUN — would remove ${result.wouldRemove} duplicate chunks across ${result.groups} groups`);
+      for (const g of result.sample) console.log(`  ${g.agent}/${g.source_type}: ${g.copies} copies, keeping id ${g.keeping}`);
+      if (result.groups > result.sample.length) console.log(`  … and ${result.groups - result.sample.length} more groups`);
+      console.log('re-run with --force to delete.');
+    }
+  } else {
+    console.log(result.deduped > 0
+      ? `removed ${result.deduped} duplicates across ${result.groups} groups`
+      : 'no duplicates found');
+  }
 
 } else if (command === '--secrets' || command === 'secrets') {
   // Cursor-style batch scan of chunks for known-shape secrets. Read-only:

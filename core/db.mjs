@@ -232,6 +232,7 @@ export function getDb() {
  */
 export function insertChunk({ agent, sourceType, sourceId, sessionId, content, timestamp, metadata }) {
   const db = getDb();
+  agent = canonicalAgent(agent);          // #13 — one spelling per agent, enforced at the door
   const hash = simpleHash(content);
 
   // Dedup check: same content in the same session = true duplicate.
@@ -834,6 +835,7 @@ export function getSession(sessionId) {
 
 export function upsertSession({ sessionId, filePath, agent, fileSize, lastByteOffset, messageCount, firstTimestamp, lastTimestamp }) {
   const db = getDb();
+  agent = canonicalAgent(agent);          // #13
   const now = Date.now();
   const existing = db.prepare('SELECT id FROM sessions WHERE session_id = ?').get(sessionId);
 
@@ -915,14 +917,43 @@ export function getLastSession(agent, { project, directory } = {}) {
   if (!row) return null;
 
   // Get the last few chunks from that session for context
+  // KEPT, not replaced. This is the tail of execution — see the note below.
   const recentChunks = db.prepare(
     'SELECT content, timestamp FROM chunks WHERE session_id = ? AND agent = ? ORDER BY timestamp DESC LIMIT 5'
   ).all(row.session_id, agent);
+
+  // Fixes #17. This function returned ONLY the five newest chunks by timestamp, which in a
+  // long session is the tail of whatever was executing — a tool result, a file write, a
+  // status line. What a resuming session needs is the RULING that changed the work, and a
+  // ruling is usually made early and then acted on for hours. So the one thing recall could
+  // not reach was the decision, and a session resumed after compaction would carry on
+  // executing a plan that had already been overturned.
+  //
+  // No classifier. Grepping prose for "we decided" would be a heuristic that is wrong with
+  // authority, and a wrong memory re-infects every session that reads it. Instead: a ruling
+  // is a chunk SOMEBODY CHOSE TO BANK. Conversation rows arrive by the hundred thousand on
+  // their own; memory-chunk / observation / scene-digest / session-summary / identity rows
+  // exist because a human or a model decided they should. Deliberate writing is the only
+  // honest signal available, and it costs nothing to trust.
+  //
+  // When a session banked nothing, the list comes back EMPTY with a note saying so, rather
+  // than handing back the tail dressed as a decision. An absence that announces itself is
+  // worth more than a plausible substitute, and it puts the incentive in the right place.
+  const DELIBERATE = ['memory-chunk', 'observation', 'scene-digest', 'session-summary', 'identity'];
+  const decisions = db.prepare(`
+    SELECT content, timestamp, source_type FROM chunks
+    WHERE session_id = ? AND agent = ? AND source_type IN (${DELIBERATE.map(() => '?').join(',')})
+    ORDER BY timestamp ASC LIMIT 5
+  `).all(row.session_id, agent, ...DELIBERATE);
 
   const current = {
     ...row,
     files_touched: row.files_touched ? JSON.parse(row.files_touched) : [],
     tags: row.tags ? JSON.parse(row.tags) : [],
+    decisions,
+    decisions_note: decisions.length
+      ? null
+      : 'nothing was deliberately banked in this session — the context below is the TAIL of execution, not a ruling. Do not read it as a decision.',
     recent_chunks: recentChunks,
   };
 
@@ -1192,14 +1223,37 @@ export function materializeDirectoryRelations() {
 // ── Agent Aliases ───────────────────────────────────────────
 
 /**
+ * Canonical form of an agent key: trimmed, lower-cased.
+ *
+ * Fixes #13. There was no canonicalisation of an agent key anywhere — a grep for
+ * toLowerCase/trim/normali across the identity modules returned nothing — so `Agent-A`,
+ * `agent-a ` and `agent-a` were three different agents writing into three different halves
+ * of one operator's memory. wmem_status on the live store already listed the same operator
+ * three times.
+ *
+ * The failure is silent, it can only be repaired retroactively, and what splits is the
+ * whole history of whoever the key belongs to. One stray WMEM_AGENT with different casing
+ * in a shell profile is the entire distance between working and split.
+ */
+export function canonicalAgent(name) {
+  if (name === null || name === undefined) return name;
+  const canon = String(name).trim().toLowerCase();
+  return canon.length ? canon : name;     // never turn a name into an empty string
+}
+
+/**
  * Resolve an agent name through aliases.
- * If the name has an alias, returns the canonical name. Otherwise returns as-is.
+ * If the name has an alias, returns the canonical name. Otherwise returns the CANONICAL
+ * FORM of the input — not the input. Returning it as-is was the bug: the alias lookup was
+ * lower-cased while the fall-through was not, so any unusual spelling missed the alias
+ * table and was then written verbatim as a brand-new agent.
  */
 export function resolveAgent(name) {
   if (!name) return name;
+  const canon = canonicalAgent(name);
   const db = getDb();
-  const alias = db.prepare('SELECT canonical FROM agent_aliases WHERE alias = ?').get(name.toLowerCase());
-  return alias ? alias.canonical : name;
+  const alias = db.prepare('SELECT canonical FROM agent_aliases WHERE alias = ?').get(canon);
+  return alias ? alias.canonical : canon;
 }
 
 /**

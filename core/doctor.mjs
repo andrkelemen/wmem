@@ -350,27 +350,65 @@ export function purgePersonality(name, { deleteData = false, dryRun = false } = 
 
 /**
  * Remove duplicate chunks (keep oldest by ID).
+ *
+ * Fixes #15. This deleted from the live store with no preview, no dryRun option and no
+ * --force, while its siblings purgeAgent and purgePersonality in this same module have
+ * always had both. It is also an MCP tool with an empty input schema, so a model could
+ * trigger an irreversible delete with no arguments at all.
+ *
+ * THE DEFAULT IS NOW A DRY RUN and every caller that means to delete says so. Defaulting
+ * the safe way round is the fix rather than a nicety: all three call sites passed no
+ * arguments, so a default of `dryRun: false` would have left the MCP tool exactly as
+ * dangerous as it was.
+ *
+ * ALSO FIXED HERE, AND IT IS THE BIGGER HALF: the grouping disagreed with the writer.
+ * insertChunk dedups on content_hash + agent + source_type + SESSION_ID and states the
+ * reason in its own comment at core/db.mjs — "Same content in different sessions =
+ * different context, keep both". This query left session_id out, so it treated identical
+ * text in different sessions as duplicate and would delete exactly the rows the insert
+ * path deliberately preserves.
+ *
+ * Measured on a 380,000-chunk store before the fix: 96,258 chunks across 40,122 groups
+ * would have been removed, about a quarter of the database. After aligning the grouping to
+ * the insert rule, the same dry run reports no duplicates at all — every one of those was
+ * a false positive, short recurring lines across years of sessions, where keep-oldest
+ * would have kept one old copy to stand for all of them.
  */
-export function dedup() {
+export function dedup({ dryRun = true } = {}) {
   const db = getDb();
 
   const dupes = db.prepare(`
-    SELECT content_hash, agent, source_type, MIN(id) as keep_id, COUNT(*) as count
+    SELECT content_hash, agent, source_type, session_id, MIN(id) as keep_id, COUNT(*) as count
     FROM chunks
     WHERE content_hash IS NOT NULL
-    GROUP BY content_hash, agent, source_type
+    GROUP BY content_hash, agent, source_type, session_id
     HAVING count > 1
   `).all();
 
-  if (dupes.length === 0) return { deduped: 0 };
+  if (dupes.length === 0) return { deduped: 0, groups: 0, dryRun };
+
+  if (dryRun) {
+    let would = 0;
+    const sample = [];
+    for (const d of dupes) {
+      would += d.count - 1;                  // each group keeps its oldest row
+      if (sample.length < 10) {
+        sample.push({ agent: d.agent, source_type: d.source_type, copies: d.count, keeping: d.keep_id });
+      }
+    }
+    return { dryRun: true, deduped: 0, wouldRemove: would, groups: dupes.length, sample };
+  }
 
   let removed = 0;
   const transaction = db.transaction(() => {
     for (const d of dupes) {
       // Delete tags for duplicate chunks
+      // `session_id IS ?` rather than `=`: NULL-safe, so rows with no session group the
+      // same way GROUP BY grouped them. With `=` a NULL session matches nothing and the
+      // group is counted but never cleaned — a silent no-op.
       const toDelete = db.prepare(
-        'SELECT id FROM chunks WHERE content_hash = ? AND agent = ? AND source_type = ? AND id != ?'
-      ).all(d.content_hash, d.agent, d.source_type, d.keep_id);
+        'SELECT id FROM chunks WHERE content_hash = ? AND agent = ? AND source_type = ? AND session_id IS ? AND id != ?'
+      ).all(d.content_hash, d.agent, d.source_type, d.session_id, d.keep_id);
 
       for (const chunk of toDelete) {
         db.prepare('DELETE FROM tags WHERE chunk_id = ?').run(chunk.id);
@@ -382,7 +420,7 @@ export function dedup() {
   });
 
   transaction();
-  return { deduped: removed, groups: dupes.length };
+  return { deduped: removed, groups: dupes.length, dryRun: false };
 }
 
 // ── 5. Status / Doctor ──────────────────────────────────
@@ -421,10 +459,22 @@ export function getStatus() {
     dbSize = statSync(dbPath).size;
   } catch { }
 
-  // Import registry
+  // Import registry.
+  //
+  // Fixes #14. This read the TEN most recent rows and then reported
+  // `imports: imports.length`, printing a page size as if it were a count, with staleness
+  // filtered over that same ten-row page so it could never exceed ten. On a live store the
+  // line read `imports: 10 (10 stale)` while import_registry held 37 rows.
+  //
+  // A status line exists to be read instead of the database. A number capped by its own
+  // query is not a measurement, and a staleness figure that cannot exceed ten is the
+  // health-check equivalent of a detector that cannot report a fault.
+  let importCount = 0;
   let imports = [];
   try {
-    imports = db.prepare('SELECT file_path, file_hash, imported_at, chunk_count FROM import_registry ORDER BY imported_at DESC LIMIT 10').all();
+    importCount = db.prepare('SELECT COUNT(*) as count FROM import_registry').get().count;
+    // Every row, because staleness must be checked against all of them, not a page.
+    imports = db.prepare('SELECT file_path, file_hash, imported_at, chunk_count FROM import_registry ORDER BY imported_at DESC').all();
   } catch { }
 
   // Stale imports
@@ -444,8 +494,9 @@ export function getStatus() {
     aliases,
     dbSize,
     dbSizeMB: +(dbSize / 1024 / 1024).toFixed(1),
-    imports: imports.length,
+    imports: importCount,
     staleImports: staleImports.length,
+    recentImports: imports.slice(0, 10),   // still a handy sample; no longer the count
   };
 }
 
@@ -479,8 +530,9 @@ export function autoFix() {
   const orphanTags = db.prepare('DELETE FROM tags WHERE chunk_id NOT IN (SELECT id FROM chunks)').run();
   if (orphanTags.changes > 0) fixes.push(`removed ${orphanTags.changes} orphan tags`);
 
-  // Fix duplicates
-  const dedupResult = dedup();
+  // Fix duplicates. Explicit opt-in since #15 — a function called autoFix may delete, but
+  // it has to say so like every other caller.
+  const dedupResult = dedup({ dryRun: false });
   if (dedupResult.deduped > 0) fixes.push(`removed ${dedupResult.deduped} duplicate chunks`);
 
   // Fix stale sessions (reset orphaned ones)

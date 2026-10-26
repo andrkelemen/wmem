@@ -397,8 +397,13 @@ const TOOLS = [
   },
   {
     name: 'wmem_dedup',
-    description: 'Remove duplicate chunks. Keeps the oldest copy, deletes newer duplicates.',
-    inputSchema: { type: 'object', properties: {} },
+    description: 'Preview duplicate chunks, or remove them with force:true. DRY RUN BY DEFAULT (#15) — returns wouldRemove, groups and a sample without deleting anything. Keeps the oldest copy of each group within a session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        force: { type: 'boolean', description: 'Actually delete. Default false — the preview runs instead.' },
+      },
+    },
   },
   {
     name: 'memory_last_session',
@@ -1475,7 +1480,7 @@ function handleWmemDoctor() {
 }
 
 function handleWmemDedup() {
-  const result = dedup();
+  const result = dedup({ dryRun: args?.force !== true });
   return { content: [{ type: 'text', text: result.deduped > 0
     ? `Removed ${result.deduped} duplicates across ${result.groups} groups.`
     : 'No duplicates found.' }] };
@@ -1767,10 +1772,23 @@ function handleLastSession(args) {
   if (current.tags.length) lines.push(`  tags: ${current.tags.join(', ')}`);
   if (current.files_touched.length) lines.push(`  files: ${current.files_touched.slice(0, 10).join(', ')}${current.files_touched.length > 10 ? ` (+${current.files_touched.length - 10} more)` : ''}`);
 
+  // #17: the RULINGS print first, because a resuming session acts on the first thing it
+  // reads. A tail printed above a decision is a tail that gets obeyed.
+  if (current.decisions?.length) {
+    lines.push('');
+    lines.push('  DECISIONS BANKED IN THIS SESSION (read these first):');
+    for (const d of current.decisions) {
+      lines.push(`    [${d.source_type}] ${d.content.slice(0, 400).replace(/\n/g, ' ')}`);
+    }
+  } else if (current.decisions_note) {
+    lines.push('');
+    lines.push(`  NO RULINGS BANKED: ${current.decisions_note}`);
+  }
+
   // Recent chunks for context
   if (current.recent_chunks?.length) {
     lines.push('');
-    lines.push('  LAST CONTEXT:');
+    lines.push('  LAST CONTEXT (tail of execution, NOT a decision):');
     for (const chunk of current.recent_chunks) {
       const preview = chunk.content.slice(0, 200).replace(/\n/g, ' ');
       lines.push(`    ${preview}`);
