@@ -5,7 +5,7 @@
 Runs **two ways**:
 
 - **As a personal MCP companion** (single-user, zero-infra): stdio MCP, one
-  agent, local SQLite. `npm install && npm start`.
+  agent, local SQLite. `npx wmem init`.
 - **As a multi-agent memory service**: `node server.mjs` exposes an HTTP
   API with optional bearer-token auth on writes, shared DB across MCP
   clients, agent-to-agent mail, capability registry, runtime identity
@@ -17,35 +17,82 @@ surface).
 
 ## Quick Start
 
-### Option A: Claude Code plugin (v1.3+, recommended)
+```bash
+npx wmem init
+```
+
+One command. It installs dependencies, imports your `CLAUDE.md`, indexes your existing
+sessions, creates a personality, registers the MCP server through `claude mcp add`, and
+registers the hooks — then verifies each of those rather than reporting that it tried.
+
+Preview everything first:
+
+```bash
+npx wmem init --dry-run
+```
+
+Then **start a new session** (hooks only fire on the next one), and check they actually ran:
+
+```bash
+wmem doctor --hooks
+```
+
+```
+SessionStart  registered       last fired 2026-10-26 13:45:31
+SessionEnd    registered       last fired 2026-10-26 13:45:30
+PostToolUse   registered       NEVER FIRED
+```
+
+`registered` and `last fired` are reported separately on purpose. *Registered and never
+fired* is a real state, and without this view it is indistinguishable from a quiet one —
+which is how three features sat dead for months behind an unregistered hook (#16).
+
+### The CLI
+
+| command | what it does |
+| --- | --- |
+| `wmem` | run as an MCP server over stdio — this is what Claude Code invokes |
+| `wmem init` | the full setup above (`scripts/setup.mjs`) |
+| `wmem doctor` | integrity, status, `--secrets`, `--hooks`, `--dedup` |
+| `wmem hooks` | register/verify hooks only — `--uninstall`, `--print-only` |
+| `wmem help` | the list |
+
+### As a Claude Code plugin
+
+> **The plugin's own hooks are still bash — Linux and macOS only for now.**
+> `plugins/wmem/hooks/` registers `Setup`, `SessionStart`, `SessionEnd` and `PreCompact` as
+> `.sh` files. On Windows those do nothing, silently, which is the whole of #19 in the one
+> install path this README used to list first. The `scripts/` route above is node and works
+> everywhere. Port tracked as a follow-up.
 
 ```bash
 claude plugins marketplace add github.com/andrkelemen/wmem
 claude plugins install wmem@wmem
 ```
 
-The plugin registers the MCP server on first run via a Setup hook, wires the SessionStart / SessionEnd / PreCompact hooks, ships two skills (`using-wmem`, `wmem-compact-protocol`) that auto-load, and exposes slash commands (`/recall`, `/chunks`, `/projects`, `/wmem-doctor`). Then run the one-time setup to import + index + create a personality:
+The plugin ships two skills (`using-wmem`, `wmem-compact-protocol`) and slash commands
+(`/recall`, `/chunks`, `/projects`, `/wmem-doctor`). Run `npx wmem init` once alongside it
+for the database, the personality and the hooks.
+
+### From a clone
 
 ```bash
-git clone https://github.com/andrkelemen/wmem.git ~/wmem
-cd ~/wmem
+git clone https://github.com/andrkelemen/wmem.git && cd wmem
 node scripts/setup.mjs --agent myname
 ```
 
-### Option B: Standalone (without the plugin)
+Same installer. `wmem init` is an alias for it, not a second path — there is exactly one.
 
-```bash
-git clone https://github.com/andrkelemen/wmem.git
-cd wmem
-node scripts/setup.mjs --agent myname
-```
+### Windows, macOS, Linux
 
-Same setup script does everything: npm install, import your CLAUDE.md, index your sessions, create a personality, register the MCP server via `claude mcp add`, register the hooks via `~/.claude/settings.json`.
+The hooks installed by `wmem init` are **node**, not shell. They used to be `.sh` files that
+used bash-only syntax and shelled out to `python3` for JSON, so on a Windows host they
+silently did nothing (#19). Node is already a hard dependency of wmem, which makes it the one
+interpreter guaranteed to be present wherever wmem runs at all.
 
-Preview first with `--dry-run`:
-```bash
-node scripts/setup.mjs --agent myname --dry-run
-```
+**Not yet true of the plugin route.** `plugins/wmem/hooks/` is still four `.sh` files, so
+`claude plugins install` is Linux and macOS only until that is ported. Said plainly here
+because a route that silently does nothing is worse than one that is not offered.
 
 ## Why
 
@@ -59,9 +106,12 @@ AI agents forget. Every compaction, every restart — knowledge is lost. wmem fi
 
 ### One-Command Setup
 ```bash
-node scripts/setup.mjs --agent myname
+npx wmem init --agent myname
 ```
-Detects OS, installs deps, imports existing files, indexes sessions, creates personality, registers MCP server. Linux, macOS, Windows.
+Detects OS, verifies node, installs deps, imports existing files, indexes sessions, creates a
+personality, registers the MCP server via `claude mcp add`, registers the hooks — then
+**verifies** each of those by reading back what is on disk rather than reporting that it
+tried. Linux, macOS, Windows.
 
 ### Hybrid Search (FTS5 + Vector + Session Dedupe)
 Multi-stage retrieval in one SQLite file. `memory_search` auto-routes based on what's in the DB — hybrid when vectors exist, tag-boosted FTS5 otherwise.
@@ -235,6 +285,16 @@ node scripts/configure-ports.mjs --print         # show resolved config
 | `WMEM_TOKEN_FILE` | Bearer-auth token file path | `./.wmem-token` (auth disabled if file missing) |
 | `WMEM_ROLE` | Force role `master`/`mirror`/`unknown` at boot | auto-detect → `master` for single-user |
 | `WMEM_OUTBOX_*` | Outbox tuning (tick, batch, backoff, dead-letter) | see `modules/wmem-outbox/README.md` |
+| `WMEM_CALLER` | **Session identity.** Set per MCP server entry, not globally | unset → NULL attribution |
+| `WMEM_AGENT` | Agent whose memory this session reads and writes | active personality, else `default` |
+| `WMEM_ADMIN` | Allows acting as another agent. Read lazily, so a flip needs no restart | unset |
+
+**Running more than one agent on one machine:** give each MCP server entry its own
+`WMEM_CALLER`. stdio is process-per-connection, so the environment variable *is* the session
+identity, and attribution in the shared store comes from it. Agent keys are canonicalised
+(trimmed, lower-cased) at every writer, so `Alice` and `alice` are one agent rather than two
+halves of one history (#13) — including on both ends of a mail address, where a mismatch
+makes a message **invisible** rather than mis-filed.
 
 ## Architecture
 
@@ -373,24 +433,55 @@ All write endpoints are gated by the role middleware (refuses 403 on non-master 
 - [x] Preference signals aggregation (`aggregatePreferences` in `core/db.mjs`)
 - [x] Batch purge size limit (500/batch under SQLite 999 param cap — `core/doctor.mjs`)
 
-## Roadmap (v1.3+)
+## Roadmap
 
-- [ ] Mid-session L1 refresh (time-based, every 30min)
-- [ ] Drift supervisor (catches mid-session — temporal anchor, capability staleness, fact contradictions; signals already in L1)
-- [ ] Session hooks auto-registration in setup script
-- [ ] Hook-based auto-bookmarking on session end (table + materializer exist via `reimport`; hook wiring pending)
-- [ ] Hook-based KG materialization (`materializeTopicRelations` exists; hook wiring pending)
+Shipped since this list was last touched — it was stale in both directions, claiming
+pending work that had landed and listing nothing that had been found since:
+
+- [x] Session hooks auto-registration in the setup script
+- [x] Hook-based auto-bookmarking on session end — the writer existed all along; the hook
+      that reaches it did not
+- [x] Hook-based KG materialization
+- [x] Secret scanning in doctor (`--secrets`)
 - [x] L1 pick-up prompt ("you were also working on X in another folder")
-- [ ] `wmem personality generate` — interactive personality builder
-- [ ] `personality update` CLI command (create/delete/use exist; update missing)
-- [ ] Build tools detection in setup script (Windows VS Build Tools, macOS Xcode CLI tools)
+- [x] Build-tools / native-module detection in setup — it now proves `better-sqlite3`
+      **loads**, not that its directory exists, because a prebuilt binary for the wrong node
+      ABI passes an existence check and then throws far from the cause
+
+Still open:
+
+- [ ] **Port the plugin route's hooks to node** — `plugins/wmem/hooks/` is `Setup`,
+      `SessionStart`, `SessionEnd` and `PreCompact` as `.sh`, so #19 is fixed for `scripts/`
+      and open for `plugins/`. Includes `PreCompact`, which the node port does not yet have
+      at all — and which is the natural WRITE side for the rulings `memory_last_session`
+      reads, since the compact boundary is the one moment where "bank this now" has a
+      deadline.
+- [ ] Mid-session L1 refresh (time-based, every 30min)
+- [ ] Drift supervisor — temporal anchor, capability staleness, fact contradictions; the
+      signals are already in L1
+- [ ] `wmem personality generate` — interactive builder
+- [ ] `personality update` CLI (create/delete/use exist; update missing)
 - [ ] Plugin architecture for extending wmem
-- [ ] Secret scanning in doctor (`--secrets` flag) — `core/secret-patterns.mjs` exists and is wired into `memory_amend` previews; wiring into `wmem_doctor` pending
-- [ ] Speaker-attribution surface (`writtenBy` / `about` on ingest path; schema exists in `0004_messages_and_written_by.sql`)
-- [ ] Run `wmem-eval` benchmark and publish retrieval scores in README
-- [ ] npm publish flow (`prepublishOnly`, `.npmignore`, automated version tagging)
-- [ ] `examples/multi-instance-walkthrough.mjs` — runnable demo of master + mirror + outbox topology
-- [ ] CI workflow (GitHub Actions running `npm test` on push + PR)
+- [ ] Speaker-attribution surface (`writtenBy` / `about` on the ingest path; schema exists
+      in `0004_messages_and_written_by.sql`)
+- [ ] Run `wmem-eval` and publish retrieval scores here
+- [ ] npm publish flow — `files` whitelist is in; version tagging and `prepublishOnly` are not
+- [ ] `examples/multi-instance-walkthrough.mjs` — runnable master + mirror + outbox demo
+- [ ] CI workflow (GitHub Actions running `npm test` on push and PR)
+- [ ] **`getStatus` hashes every registered file on every call.** Staleness is "sha256 of
+      the file on disk differs from the stored hash", so it cannot be a SQL predicate, and
+      the read is streamed rather than materialised — which bounds the *footprint*, not the
+      *work*. At 37 registered transcripts that is nothing; at a few thousand it is hashing
+      gigabytes on the call everything reaches for, and the memory fix makes that cost less
+      visible rather than smaller. The fix is to compare `statSync().mtimeMs` and `size`
+      against stored values first and hash only on a difference — two more columns on
+      `import_registry`. Not built: at this table size it would be optimising something that
+      has not grown, and a version that trusts mtime with no fallback is worse than hashing.
+- [ ] **Independent agents on one instance** — per-request identity exists on the HTTP path
+      and reads route over it when `WMEM_HTTP_URL` is set, but writes still go direct to
+      SQLite in-process, so sessions cannot yet share one server safely. Identity enforcement
+      on the HTTP path comes first: it currently trusts `X-Caller` without checking it
+      against the env anchor.
 
 ## Examples
 
@@ -408,6 +499,30 @@ All write endpoints are gated by the role middleware (refuses 403 on non-master 
 - [Search Guide](./docs/search-guide.md) — FTS5 syntax, scopes, snippets, graph queries
 - [Decision Engine](./docs/decision-engine-usage.md) — proactive behavior, salience scoring
 - [Contributing](./docs/contributing.md) — dev setup, code style, architecture rules
+
+## Two behaviours that surprise people
+
+**`wmem_dedup` and `doctor --dedup` are a DRY RUN by default.** They report what *would* go
+and delete nothing until `force: true` / `--force`, matching `--purge-agent` and
+`--purge-personality`, which have always required it. This is not caution for its own sake:
+on a 380,000-chunk store the preview revealed that dedup grouped without `session_id` while
+`insertChunk` dedups *with* it deliberately — so it would have removed 96,258 chunks, a
+quarter of the database, every one a false positive (#15). Making a destructive operation
+explain itself first is what found the bug.
+
+**`memory_last_session` returns rulings, not the tail.** The five newest chunks by timestamp
+are whatever was executing when a session ended — a tool result, a file write, a status
+line. What a resuming session needs is the decision that changed the work, which was usually
+made hours earlier. So it returns the chunks somebody *chose to bank* —
+`memory-chunk`, `observation`, `scene-digest`, `session-summary`, `identity` — printed above
+the tail, with the tail labelled as not-a-decision. There is no classifier and no prose
+matching: deliberate writing is the only honest signal, because conversation rows arrive by
+the hundred thousand on their own. A session that banked nothing gets an empty list that
+*says so*, rather than the tail dressed up as a ruling.
+
+`memory_ingest`'s `sourceType` is an enum for this reason — if the vocabulary lives only in a
+description, a free-typed `decision` lands a chunk that recall can never return, and nothing
+at write time tells you.
 
 ## Design Principles
 
