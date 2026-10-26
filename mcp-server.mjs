@@ -25,7 +25,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { insertChunk, getDb, upsertProject, getProjects, getProject, shipProject, getRecentSessions, getSessionChunks, hybridSearch, shareChunk, markPersonal, upsertBookmark, getLastSession, getRecentBookmarks, materializeTopicRelations, materializeDirectoryRelations, amendChunk } from './core/db.mjs';
+import { insertChunk, getDb, upsertProject, getProjects, getProject, shipProject, getRecentSessions, getSessionChunks, hybridSearch, shareChunk, markPersonal, upsertBookmark, getLastSession, getRecentBookmarks, materializeTopicRelations, materializeDirectoryRelations, amendChunk, ALL_SOURCE_TYPES, DELIBERATE_SOURCE_TYPES} from './core/db.mjs';
 
 // Read backend switches to HTTP when WMEM_HTTP_URL is set, falls through
 // to local db.mjs otherwise. Sync local calls still work because the
@@ -115,7 +115,11 @@ const TOOLS = [
       type: 'object',
       properties: {
         agent: { type: 'string', description: 'Which agent this memory belongs to' },
-        sourceType: { type: 'string', description: 'Type: conversation, memory-chunk, identity, scene-digest, observation' },
+        // enum, not prose (review, #17). The vocabulary used to live in this description
+        // while the recall query used its own copy, so a free-typed "decision" landed a
+        // chunk recall could never return and nothing said so at write time.
+        sourceType: { type: 'string', enum: ALL_SOURCE_TYPES,
+          description: `Type. These are DELIBERATE and are what memory_last_session returns as rulings: ${DELIBERATE_SOURCE_TYPES.join(', ')}. The rest arrive automatically: ${ALL_SOURCE_TYPES.filter(t => !DELIBERATE_SOURCE_TYPES.includes(t)).join(', ')}.` },
         content: { type: 'string', description: 'The content to index' },
         sourceId: { type: 'string', description: 'Optional source identifier (session ID, chunk hex, filename)' },
       },
@@ -1479,10 +1483,23 @@ function handleWmemDoctor() {
   return { content: [{ type: 'text', text: lines.join('\n') }] };
 }
 
-function handleWmemDedup() {
+function handleWmemDedup(args) {
   const result = dedup({ dryRun: args?.force !== true });
+  // The model-facing path needs the preview renderer too, not just the schema. In a dry run
+  // `deduped` is always 0, so a message keyed on it answers "No duplicates found" while
+  // wouldRemove is 96,258 — #14's defect reintroduced one layer up, on the surface a model
+  // actually reads. It failed safe rather than destructively, which is better, but it still
+  // failed. Caught in review.
+  if (result.dryRun) {
+    const text = result.wouldRemove
+      ? `DRY RUN — would remove ${result.wouldRemove} duplicate chunks across ${result.groups} groups. `
+        + `Nothing deleted. Re-run with force:true to delete.\n`
+        + result.sample.map(g => `  ${g.agent}/${g.source_type}: ${g.copies} copies, keeping id ${g.keeping}`).join('\n')
+      : 'No duplicates found.';
+    return { content: [{ type: 'text', text }] };
+  }
   return { content: [{ type: 'text', text: result.deduped > 0
-    ? `Removed ${result.deduped} duplicates across ${result.groups} groups.`
+    ? `Removed ${result.deduped} duplicate chunks across ${result.groups} groups.`
     : 'No duplicates found.' }] };
 }
 
@@ -1958,7 +1975,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'wmem_doctor':
       return handleWmemDoctor();
     case 'wmem_dedup':
-      return handleWmemDedup();
+      return handleWmemDedup(args);
     case 'memory_last_session':
       return handleLastSession(args);
     case 'memory_sessions':

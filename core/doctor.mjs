@@ -470,20 +470,30 @@ export function getStatus() {
   // query is not a measurement, and a staleness figure that cannot exceed ten is the
   // health-check equivalent of a detector that cannot report a fault.
   let importCount = 0;
-  let imports = [];
+  let staleCount = 0;
+  let recentImports = [];
   try {
     importCount = db.prepare('SELECT COUNT(*) as count FROM import_registry').get().count;
-    // Every row, because staleness must be checked against all of them, not a page.
-    imports = db.prepare('SELECT file_path, file_hash, imported_at, chunk_count FROM import_registry ORDER BY imported_at DESC').all();
+    // STREAMED, not materialised. Review raised the right objection — getStatus is the
+    // cheap call everything reaches for, and dropping the LIMIT made it read every row of a
+    // table that grows by one per imported transcript.
+    //
+    // The suggested fix was a SQL aggregate, and it cannot work here: staleness is "sha256
+    // of the file on disk differs from the stored hash", which is filesystem work no SQL
+    // predicate can evaluate. So the bound comes from iterating instead of aggregating —
+    // one row in memory at a time, every row still checked, and the ten most recent kept as
+    // the sample. Same answers, bounded footprint, and the count stops depending on how
+    // much got loaded first.
+    for (const row of db.prepare('SELECT file_path, file_hash, imported_at, chunk_count FROM import_registry ORDER BY imported_at DESC').iterate()) {
+      let stale;
+      try {
+        stale = createHash('sha256').update(readFileSync(row.file_path)).digest('hex') !== row.file_hash;
+      } catch { stale = true; }        // file missing = stale
+      if (stale) staleCount++;
+      if (recentImports.length < 10) recentImports.push(row);
+    }
   } catch { }
 
-  // Stale imports
-  const staleImports = imports.filter(i => {
-    try {
-      const currentHash = createHash('sha256').update(readFileSync(i.file_path)).digest('hex');
-      return currentHash !== i.file_hash;
-    } catch { return true; } // file missing = stale
-  });
 
   return {
     chunks,
@@ -495,8 +505,8 @@ export function getStatus() {
     dbSize,
     dbSizeMB: +(dbSize / 1024 / 1024).toFixed(1),
     imports: importCount,
-    staleImports: staleImports.length,
-    recentImports: imports.slice(0, 10),   // still a handy sample; no longer the count
+    staleImports: staleCount,
+    recentImports,                          // a sample, never the count
   };
 }
 

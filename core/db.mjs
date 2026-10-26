@@ -20,6 +20,26 @@ import { extractQueryFacets, scoreChunkAgainstFacets } from './facets.mjs';
 import { runMigrations } from '../migrations/_runner.mjs';
 import { backfillChunkIdForSession } from './scopes.mjs';
 
+/**
+ * Source-type vocabulary. ONE list, exported, because there were two and they disagreed.
+ *
+ * Review finding on #17: the rulings query named five types, the memory_ingest tool
+ * description named a different four-plus-one, and `session-summary` was in one and not the
+ * other while `conversation` was in the description and correctly absent from the rulings
+ * list. A literal list that already lives somewhere else is a thing to derive, not restate.
+ *
+ * Worse, and the reason this matters beyond tidiness: FOUR OF THE FIVE DELIBERATE TYPES
+ * HAVE NO WRITE PATH IN THIS REPO. They are reachable only through memory_ingest, where
+ * sourceType is free text — so whether recall can find a ruling depended on a model
+ * free-typing the right string months earlier, and `decision` or `ruling` or `summary`
+ * would land a chunk the query can never return, with nothing at write time saying so.
+ * Exporting the list lets the tool schema carry it as an enum, which is what turns a
+ * convention into a constraint.
+ */
+export const DELIBERATE_SOURCE_TYPES = ['memory-chunk', 'observation', 'scene-digest', 'session-summary', 'identity'];
+export const AUTOMATIC_SOURCE_TYPES = ['conversation', 'note', 'fact', 'directory', 'topic', 'memory-import'];
+export const ALL_SOURCE_TYPES = [...AUTOMATIC_SOURCE_TYPES, ...DELIBERATE_SOURCE_TYPES];
+
 const DB_PATH = process.env.MEMORY_DB || './data/memory.db';
 
 let db = null;
@@ -722,6 +742,7 @@ export function close() {
  * Insert a preference signal. Dedup by agent + subject + context + chunk_id.
  */
 export function insertPreferenceSignal({ agent, domain, subject, context, sentiment, rawText, sessionId, chunkId }) {
+  agent = canonicalAgent(agent);          // #13 — review: canonicalised at 2 of 6 writers, now all 6
   const db = getDb();
   const existing = db.prepare(
     'SELECT id FROM preference_signals WHERE agent = ? AND subject = ? AND context IS NOT DISTINCT FROM ? AND chunk_id = ?'
@@ -790,6 +811,7 @@ export function searchPreferences(query, { agent, domain, limit = 20 } = {}) {
  * Deduplicates by agent + predicate + object.
  */
 export function insertFact({ agent, predicate, object, sourceChunkId, sessionId, timestamp }) {
+  agent = canonicalAgent(agent);          // #13 — review: canonicalised at 2 of 6 writers, now all 6
   const db = getDb();
   const existing = db.prepare(
     'SELECT id FROM facts WHERE agent = ? AND predicate = ? AND object = ?'
@@ -939,12 +961,12 @@ export function getLastSession(agent, { project, directory } = {}) {
   // When a session banked nothing, the list comes back EMPTY with a note saying so, rather
   // than handing back the tail dressed as a decision. An absence that announces itself is
   // worth more than a plausible substitute, and it puts the incentive in the right place.
-  const DELIBERATE = ['memory-chunk', 'observation', 'scene-digest', 'session-summary', 'identity'];
+  // vocabulary from DELIBERATE_SOURCE_TYPES — one list, exported, see its note
   const decisions = db.prepare(`
     SELECT content, timestamp, source_type FROM chunks
-    WHERE session_id = ? AND agent = ? AND source_type IN (${DELIBERATE.map(() => '?').join(',')})
+    WHERE session_id = ? AND agent = ? AND source_type IN (${DELIBERATE_SOURCE_TYPES.map(() => '?').join(',')})
     ORDER BY timestamp ASC LIMIT 5
-  `).all(row.session_id, agent, ...DELIBERATE);
+  `).all(row.session_id, agent, ...DELIBERATE_SOURCE_TYPES);
 
   const current = {
     ...row,
@@ -1279,8 +1301,26 @@ export function createAlias(alias, canonical) {
   db.prepare('INSERT OR REPLACE INTO agent_aliases (alias, canonical, created_at) VALUES (?, ?, ?)').run(lower, canon, now);
 
   // Retroactive re-tag: update all chunks and sessions with agent = alias → canonical
-  const chunkChanges = db.prepare('UPDATE chunks SET agent = ? WHERE agent = ?').run(canon, lower).changes;
-  const sessionChanges = db.prepare('UPDATE sessions SET agent = ? WHERE agent = ?').run(canon, lower).changes;
+  // RETROACTIVE REPAIR ACROSS EVERY TABLE THAT HOLDS AN AGENT KEY.
+  //
+  // Review finding: this re-tagged chunks and sessions, left facts, messages,
+  // preference_signals and projects pointing at the old spelling, and reported success —
+  // because `retagged` only counted what it touched. The one tool that can repair a split
+  // identity was itself split, and said it had worked.
+  //
+  // messages is the one with teeth: a row addressed to 'Aurora' is INVISIBLE to a reader
+  // asking as 'aurora', not merely mis-filed. Delivery is the subsystem where a silent
+  // mismatch costs most.
+  const retag = (sql) => { try { return db.prepare(sql).run(canon, lower).changes; } catch { return null; } };
+  const chunkChanges = retag('UPDATE chunks SET agent = ? WHERE agent = ?');
+  const sessionChanges = retag('UPDATE sessions SET agent = ? WHERE agent = ?');
+  const factChanges = retag('UPDATE facts SET agent = ? WHERE agent = ?');
+  const signalChanges = retag('UPDATE preference_signals SET agent = ? WHERE agent = ?');
+  const projectChanges = retag('UPDATE projects SET agent = ? WHERE agent = ?');
+  const mailFromChanges = retag('UPDATE messages SET from_agent = ? WHERE from_agent = ?');
+  const mailToChanges = retag('UPDATE messages SET to_agent = ? WHERE to_agent = ?');
+  // A table that does not exist on this schema version returns null rather than 0, so
+  // "nothing to repair" and "never looked" stay distinguishable in the report.
 
   return { created: true, alias: lower, canonical: canon, retagged: { chunks: chunkChanges, sessions: sessionChanges } };
 }
@@ -1368,7 +1408,7 @@ export function upsertProject({ name, status, summary, pending, shipped, agent, 
   } else {
     db.prepare(
       'INSERT INTO projects (name, status, started, last_touched, summary, pending, shipped, agent, gitea_repo, metadata) VALUES (?,?,?,?,?,?,?,?,?,?)'
-    ).run(name, status || 'active', new Date().toISOString(), now, summary || '', pending || '', shipped || '', agent || '', giteaRepo || '', metadata ? JSON.stringify(metadata) : null);
+    ).run(name, status || 'active', new Date().toISOString(), now, summary || '', pending || '', shipped || '', canonicalAgent(agent) || '', giteaRepo || '', metadata ? JSON.stringify(metadata) : null);
     return { created: true, name };
   }
 }
