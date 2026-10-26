@@ -3,6 +3,95 @@
 All notable changes to wmem are documented here. Format loosely based on
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.3.0-b] — 2026-10-26 — "v1.3b", documentation
+
+The README described an install that no longer exists and a roadmap that was wrong in both
+directions.
+
+### Changed
+- **Quick Start is one command.** It presented two paths as equals — "install the plugin,
+  then clone the repo and run setup" beside "clone the repo and run setup" — which is one
+  installer wearing two instructions. Now `npx wmem init`, with the plugin and the clone as
+  variations beneath it, and `wmem doctor --hooks` as the step that follows, because hooks
+  only fire on the *next* session and "registered" is not "fired".
+- **The CLI is documented.** `wmem`, `wmem init`, `wmem doctor`, `wmem hooks`, `wmem help`
+  existed as of v1.3a and appeared nowhere.
+- **Cross-platform is stated plainly.** The hooks are node rather than shell, so Windows
+  works; previously they were bash files that shelled out to python3 and silently did
+  nothing there.
+- **Roadmap de-staled.** It still listed as pending: hook auto-registration, hook-based
+  bookmarking, KG materialization, and `--secrets` — all shipped. It listed nothing found
+  since. Independent-agents-on-one-instance is now on it with the honest blocker written
+  down: per-request identity exists on the HTTP path and reads route over it, but writes go
+  direct to SQLite in-process, and the HTTP path trusts `X-Caller` without checking it
+  against the env anchor.
+- **Multi-agent configuration is explained** where the env vars are: one `WMEM_CALLER` per
+  MCP server entry, because stdio is process-per-connection so the variable *is* the session
+  identity.
+
+### Added
+- **"Two behaviours that surprise people."** Dedup is a dry run by default, with the reason
+  — the preview is what revealed that dedup grouped without `session_id` while `insertChunk`
+  dedups with it, 96,258 false positives on a live store. And `memory_last_session` returns
+  rulings above the tail, with the tail labelled, and an empty list that says so when a
+  session banked nothing.
+
+## [1.3.0-a] — 2026-10-26 — "v1.3a", the install release
+
+Download and run. One command from nothing to a working install, and the install tells the
+truth about itself afterwards.
+
+### Fixed
+- #19 — the hooks are **node, not bash**. They were `.sh` files using bash-only constructs
+  and shelling out to `python3` for JSON; on a Windows host neither is reliably present, so
+  none of them ran. Node is already a hard dependency, which makes it the one interpreter
+  guaranteed to exist wherever wmem works at all. Replacing the shell also removed a second
+  JSON-escaping implementation (a python3 pipeline with a sed+awk fallback behind it) whose
+  choice of path depended on the host.
+- #16 — `SessionEnd` is registered, and with it the three things that had never run once:
+  the incremental index, the preference-consolidation enqueue, and the session bookmark.
+  The features were not missing, they were unreachable. `PostToolUse` is registered too; it
+  shipped and was documented but was never in the installer's map.
+- #20 — the server's instructions told the model to poll a queue that could not fill. With
+  the hook reachable, the statement is true. `wmem doctor --hooks` is the check that makes
+  it falsifiable.
+
+### Added
+- `wmem init` / `npx wmem init` — the one-command install, which **is** `scripts/setup.mjs`
+  rather than a second path beside it. The first draft of this release added a new
+  `init.mjs` that duplicated an installer already in the repo, and did the MCP registration
+  worse: it printed a block to paste, while `setup.mjs` has always called
+  `claude mcp add -s user`, which is the supported route and does not depend on guessing the
+  shape of someone's settings file. Two installers is the same defect as two copies of a
+  vocabulary — the duplicate is deleted.
+- Setup's verification step now proves the native module **loads** rather than exists. Step
+  3 checks for the `better-sqlite3` directory, which is present even when its prebuilt
+  binary was built for a different node ABI; in that case `require()` throws and later steps
+  fail far from the cause. Opening the database is also what applies migrations, so one call
+  proves both and names the real fix (`npm rebuild better-sqlite3`) when it cannot.
+- `wmem doctor --hooks` — **the canary.** Every hook stamps a file when it fires, so
+  "registered" and "last fired" are reported separately. *Registered and never fired* is a
+  real state, it is the state #16 was in, and it used to be invisible: an empty preference
+  queue looks exactly like a quiet one.
+- `wmem help`, and subcommand dispatch (`init`, `doctor`, `hooks`) that runs **before** any
+  import touches the database — an init command that needs a working install to start is
+  not an init command.
+
+### Changed
+- `register-hooks` **verifies instead of reporting.** It re-reads the file it just wrote and
+  prints what is actually in there. It also recognises the old `.sh` entries and replaces
+  them, so upgrading does not leave two hooks on one event, and it preserves other tools'
+  hooks through both install and uninstall. Commands are quoted on both halves, because the
+  node path contains "Program Files" more often than not.
+- `package.json` gained a `files` whitelist, so a publish ships the library and not the
+  working tree.
+
+### Note on the version string
+`1.3a` is not valid semver, so npm cannot publish it as written. Published as a prerelease
+it would be `1.3.0-a.1`, and users would then need `npx wmem@next` rather than `npx wmem` —
+which works against the point of this release. `package.json` therefore stays at `1.3.0`
+and this entry carries the label. Maintainer's call.
+
 ## [1.3.0] — 2026-10-26
 
 Release bookkeeping caught up (#31). Nine PRs labelled v1.3 merged between 2026-05-17 and
