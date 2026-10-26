@@ -24,5 +24,16 @@
   },
   "optionalDependencies": {
     "express": "^5.2.1"
-  }
+  },
+  "files": [
+    "core/",
+    "scripts/",
+    "migrations/",
+    "mcp-server.mjs",
+    "server.mjs",
+    "capabilities.md",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ]
 }

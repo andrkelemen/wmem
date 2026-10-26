@@ -290,7 +290,24 @@ step(10, 'Verification');
 const { getStats } = await import('../core/db.mjs');
 const { getActivePersonality } = await import('../core/personality.mjs');
 
-const stats = getStats();
+// The native module LOADS, not merely exists. Step 3 checks for the better-sqlite3
+// directory, which is present even when the prebuilt binary was compiled for a different
+// node ABI — in that case require() throws and every later step fails with a confusing
+// error far from the cause. Opening the database is also what applies migrations, so this
+// one call proves both at once and names the real problem if it fails.
+let stats, tableCount = 0;
+try {
+  const { getDb } = await import('../core/db.mjs');
+  tableCount = getDb().prepare("SELECT COUNT(*) c FROM sqlite_master WHERE type='table'").get().c;
+  ok(`database opens — ${tableCount} tables, migrations applied`);
+} catch (e) {
+  fail(`database will not open: ${e.message}`);
+  log('better-sqlite3 is a native module; on a fresh host this usually means it needs');
+  log('rebuilding for your node version:  npm rebuild better-sqlite3');
+  process.exit(1);
+}
+
+stats = getStats();
 const active = getActivePersonality();
 
 ok(`chunks: ${stats.total}`);
@@ -321,6 +338,9 @@ if (stats.total > 0 && active) {
   console.log('\n⚠ setup finished with warnings — check above.\n');
 }
 
+console.log('Check the hooks actually fired, not just that they registered:');
+console.log('  node scripts/doctor.mjs --hooks');
+console.log('');
 console.log('Next steps:');
 console.log(`  node scripts/personality.mjs show ${agent}     — customize personality`);
 console.log(`  node scripts/generate-l1.mjs --agent ${agent}  — preview L1 block`);

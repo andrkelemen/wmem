@@ -3,6 +3,62 @@
 All notable changes to wmem are documented here. Format loosely based on
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.3.0-a] — 2026-10-26 — "v1.3a", the install release
+
+Download and run. One command from nothing to a working install, and the install tells the
+truth about itself afterwards.
+
+### Fixed
+- #19 — the hooks are **node, not bash**. They were `.sh` files using bash-only constructs
+  and shelling out to `python3` for JSON; on a Windows host neither is reliably present, so
+  none of them ran. Node is already a hard dependency, which makes it the one interpreter
+  guaranteed to exist wherever wmem works at all. Replacing the shell also removed a second
+  JSON-escaping implementation (a python3 pipeline with a sed+awk fallback behind it) whose
+  choice of path depended on the host.
+- #16 — `SessionEnd` is registered, and with it the three things that had never run once:
+  the incremental index, the preference-consolidation enqueue, and the session bookmark.
+  The features were not missing, they were unreachable. `PostToolUse` is registered too; it
+  shipped and was documented but was never in the installer's map.
+- #20 — the server's instructions told the model to poll a queue that could not fill. With
+  the hook reachable, the statement is true. `wmem doctor --hooks` is the check that makes
+  it falsifiable.
+
+### Added
+- `wmem init` / `npx wmem init` — the one-command install, which **is** `scripts/setup.mjs`
+  rather than a second path beside it. The first draft of this release added a new
+  `init.mjs` that duplicated an installer already in the repo, and did the MCP registration
+  worse: it printed a block to paste, while `setup.mjs` has always called
+  `claude mcp add -s user`, which is the supported route and does not depend on guessing the
+  shape of someone's settings file. Two installers is the same defect as two copies of a
+  vocabulary — the duplicate is deleted.
+- Setup's verification step now proves the native module **loads** rather than exists. Step
+  3 checks for the `better-sqlite3` directory, which is present even when its prebuilt
+  binary was built for a different node ABI; in that case `require()` throws and later steps
+  fail far from the cause. Opening the database is also what applies migrations, so one call
+  proves both and names the real fix (`npm rebuild better-sqlite3`) when it cannot.
+- `wmem doctor --hooks` — **the canary.** Every hook stamps a file when it fires, so
+  "registered" and "last fired" are reported separately. *Registered and never fired* is a
+  real state, it is the state #16 was in, and it used to be invisible: an empty preference
+  queue looks exactly like a quiet one.
+- `wmem help`, and subcommand dispatch (`init`, `doctor`, `hooks`) that runs **before** any
+  import touches the database — an init command that needs a working install to start is
+  not an init command.
+
+### Changed
+- `register-hooks` **verifies instead of reporting.** It re-reads the file it just wrote and
+  prints what is actually in there. It also recognises the old `.sh` entries and replaces
+  them, so upgrading does not leave two hooks on one event, and it preserves other tools'
+  hooks through both install and uninstall. Commands are quoted on both halves, because the
+  node path contains "Program Files" more often than not.
+- `package.json` gained a `files` whitelist, so a publish ships the library and not the
+  working tree.
+
+### Note on the version string
+`1.3a` is not valid semver, so npm cannot publish it as written. Published as a prerelease
+it would be `1.3.0-a.1`, and users would then need `npx wmem@next` rather than `npx wmem` —
+which works against the point of this release. `package.json` therefore stays at `1.3.0`
+and this entry carries the label. Maintainer's call.
+
 ## [1.3.0] — 2026-10-26
 
 Release bookkeeping caught up (#31). Nine PRs labelled v1.3 merged between 2026-05-17 and

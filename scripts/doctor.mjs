@@ -57,6 +57,33 @@ if (command === '--status' || command === 'status') {
     console.log('no issues to fix.');
   }
 
+} else if (command === '--hooks' || command === 'hooks') {
+  // #16: the question "is SessionEnd working" used to be answerable only by inference —
+  // the preference queue was empty, which looks identical to "nothing to consolidate".
+  // Each hook stamps a file when it fires, so the answer is a date.
+  const { readFires } = await import('./hooks/lib.mjs');
+  const { homedir } = await import('node:os');
+  const { join } = await import('node:path');
+  const fires = readFires(process.env.MEMORY_DB);
+  const settingsPath = process.env.CLAUDE_SETTINGS || join(homedir(), '.claude', 'settings.json');
+  let registered = {};
+  try {
+    const { readFileSync } = await import('node:fs');
+    const st = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    for (const [ev, rows] of Object.entries(st.hooks ?? {})) {
+      registered[ev] = rows.some(r => (r.hooks ?? []).some(h => /wmem|scripts[\\/]hooks/.test(h.command ?? '')));
+    }
+  } catch { registered = null; }
+
+  for (const ev of ['SessionStart', 'SessionEnd', 'PostToolUse']) {
+    const reg = registered === null ? 'settings unreadable' : (registered[ev] ? 'registered' : 'NOT REGISTERED');
+    const f = fires[ev];
+    const fired = f ? `last fired ${new Date(f.at).toISOString().replace('T', ' ').slice(0, 19)}` : 'NEVER FIRED';
+    console.log(`${ev.padEnd(13)} ${reg.padEnd(16)} ${fired}`);
+  }
+  console.log('\nRegistered and never fired = installed but not running. That is the state');
+  console.log('this view exists to make visible, because an empty queue looks the same as a quiet one.');
+
 } else if (command === '--dedup' || command === 'dedup') {
   // #15: this deleted on sight. It now shows the plan and waits for --force, matching
   // --purge-agent and --purge-personality, which have always required it.
