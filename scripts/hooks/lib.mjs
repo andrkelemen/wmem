@@ -78,15 +78,34 @@ export function runScript(rel, args = [], { input } = {}) {
  *
  * Best-effort by construction: if stamping fails the hook still does its job.
  */
-export function recordFire(event, detail = {}) {
+export function recordFire(event, detail = {}, { throttleMs = 0 } = {}) {
   try {
     const path = join(dirname(process.env.MEMORY_DB || join(homedir(), '.wmem', 'memory.db')), 'hook-fires.json');
     let all = {};
     try { all = JSON.parse(readFileSync(path, 'utf8')); } catch {}
+
+    // THROTTLE, for PostToolUse. Claude Code spawns the hook once per tool call, so there is
+    // no long-lived process to stamp "once per process" in — the write is inherently
+    // per-call. On a working session that is thousands of read-modify-writes for a field
+    // whose only consumer is `doctor --hooks` printing "last fired", where a minute of
+    // resolution is ample. The read stays (it is how we know the age); the write is what
+    // gets skipped.
+    if (throttleMs > 0 && all[event]?.at && Date.now() - all[event].at < throttleMs) return;
+
     all[event] = { at: Date.now(), iso: new Date().toISOString(), ...detail };
     const tmp = path + '.tmp';
     writeFileSync(tmp, JSON.stringify(all, null, 2));
     renameSync(tmp, path);                       // atomic: a reader never sees half a file
+
+    // KNOWN RACE, deliberately tolerated. This is a read-modify-write on one shared file
+    // with no lock. writeFileSync + renameSync makes each write atomic, so the file never
+    // corrupts — but two sessions firing at once both read the old object and the second
+    // rename wins, so an event can report a stale "last fired" while it is actively firing.
+    // With several concurrent sessions that is the normal case, not the edge.
+    //
+    // Acceptable for a canary: its question is "has this EVER fired", and a stale timestamp
+    // still answers that. Written down because "last fired looks stale" is exactly the
+    // symptom someone will later debug as a broken hook, and this is where they will look.
   } catch {}
 }
 

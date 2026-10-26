@@ -40,6 +40,16 @@ const HOOK_FILES = {
   SessionStart: join(WMEM_ROOT, 'scripts', 'hooks', 'session-start.mjs'),
   SessionEnd:   join(WMEM_ROOT, 'scripts', 'hooks', 'session-end.mjs'),
   PostToolUse:  join(WMEM_ROOT, 'scripts', 'hooks', 'post-tool-use.mjs'),
+  // PreCompact: NOT PORTED YET — plugins/wmem/hooks/pre-compact.sh is still bash, and so
+  // is the rest of the plugin route (Setup, SessionStart, SessionEnd). The node port covers
+  // three of the four events the bash route had, so #19 is fixed for scripts/ and open for
+  // plugins/. Stated here because a missing capability should be visible from the code
+  // rather than from diffing two trees.
+  //
+  // PreCompact is also the one worth having most: the compact boundary is the moment
+  // context is lost, and the only moment where "write down what matters now" has a
+  // deadline. It is the natural WRITE side for the rulings memory_last_session reads —
+  // which is why that query returns empty on stores where nothing ever banked one.
 };
 
 // Quote both halves: on Windows the node path contains "Program Files" more often than not,

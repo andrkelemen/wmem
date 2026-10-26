@@ -7,13 +7,20 @@
 // opens the database or reads config, because on a fresh host those are exactly the things
 // that have not been set up yet — an init command that needs a working install to start is
 // not an init command.
-if (process.argv[2] && !process.argv[2].startsWith('-')) {
+const sub = process.argv[2];
+// `--help` and `-h` must pass this guard. The first version excluded exactly the two flags
+// the block then handled, so they fell through and started an MCP server on stdio: no
+// output, no error, no exit, a terminal waiting for JSON-RPC frames. `--help` is the first
+// thing anyone types at an unfamiliar binary, which made it first contact on a release whose
+// thesis is download-and-run. The startsWith('-') guard still earns its place — it is what
+// keeps a future `wmem --port 1234` from being read as a subcommand.
+if (sub && (!sub.startsWith('-') || ['--help', '-h'].includes(sub))) {
   const SUBCOMMANDS = {
     init: 'scripts/setup.mjs',      // ONE installer. See the note in setup.mjs step 10.
     doctor: 'scripts/doctor.mjs',
     hooks: 'scripts/register-hooks.mjs',
   };
-  const target = SUBCOMMANDS[process.argv[2]];
+  const target = SUBCOMMANDS[sub];
   if (target) {
     const { spawnSync } = await import('node:child_process');
     const { dirname, join, resolve } = await import('node:path');
@@ -23,7 +30,7 @@ if (process.argv[2] && !process.argv[2].startsWith('-')) {
       { stdio: 'inherit', cwd: root });
     process.exit(r.status ?? 1);
   }
-  if (['help', '--help', '-h'].includes(process.argv[2])) {
+  if (['help', '--help', '-h'].includes(sub)) {
     console.log('wmem — memory for coding agents\n');
     console.log('  wmem            run as an MCP server over stdio (what Claude Code invokes)');
     console.log('  wmem init       full setup: deps, import, index, personality, MCP, hooks (= scripts/setup.mjs)');
@@ -31,7 +38,7 @@ if (process.argv[2] && !process.argv[2].startsWith('-')) {
     console.log('  wmem hooks      register/verify hooks only (--uninstall, --print-only)');
     process.exit(0);
   }
-  console.error(`unknown subcommand: ${process.argv[2]}  (try: wmem help)`);
+  console.error(`unknown subcommand: ${sub}  (try: wmem help)`);
   process.exit(2);
 }
 
