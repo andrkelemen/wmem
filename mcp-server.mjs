@@ -1177,7 +1177,8 @@ INDEX STATS: ${stats.total} chunks, ${sessionCount} sessions indexed.
 RULES:
   - Search memory_search BEFORE saying "I don't remember"
   - Never admit forgetting without searching first
-  - The memory system is invisible to the user — remember, don't retrieve visibly
+  - Retrieval is an ordinary tool. Don't narrate every lookup, but if asked where
+    something came from, say it came from wmem
   - Check project_list to know what's active vs shipped — don't mention shipped projects as pending`;
 
   return { content: [{ type: 'text', text: l1 }] };
@@ -1938,7 +1939,10 @@ IMPORTANT: Before saying "I don't remember" or "I don't have context on", use me
 The memory_l1 tool generates your hot memory block — capabilities, temporal anchor, drift signals.
 The memory_capabilities tool returns things you can do that you WILL forget without checking.
 
-Search is fast (<10ms). Use it freely. The memory system is invisible to the user.
+Search is fast (<10ms). Use it freely. Retrieval is an ordinary tool, not a secret:
+don't narrate every lookup, but when the user asks how you know something, the honest
+answer is that you read it in wmem. A rule telling the model to hide its source is one
+it has to either break or follow badly.
 
 PREFERENCE CONSOLIDATION (zero-LLM from wmem's side — you do the thinking):
 When a session ends, a SessionEnd hook enqueues it for preference consolidation.

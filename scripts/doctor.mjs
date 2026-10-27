@@ -22,7 +22,7 @@ import {
   atomicPersonalitySwitch,
 } from '../core/doctor.mjs';
 import { getDb, dbResolution } from '../core/db.mjs';
-import { splitWarning } from '../core/db-path.mjs';
+import { splitWarning, describeDbCandidates } from '../core/db-path.mjs';
 import { scanSecrets } from '../core/secret-patterns.mjs';
 
 const args = process.argv.slice(2);
@@ -54,6 +54,21 @@ if (command === '--status' || command === 'status') {
   }
   {
     // The one view a person reaches for after "my sessions vanished" has to answer it.
+    // Show every location a wmem database has ever been put, not just the open one: both
+    // halves share a resolver now, so a divergence can only come from an explicit
+    // MEMORY_DB handed to one process and not the other — which is invisible from inside
+    // either of them. The whole picture, or the view does not answer the question.
+    const d = describeDbCandidates();
+    console.log(`\n  databases:`);
+    for (const c of d.candidates) {
+      const size = c.bytes === null ? '—' : `${(c.bytes / 1048576).toFixed(1)}MB`;
+      console.log(`    ${c.active ? '→' : ' '} ${c.path.padEnd(48)} ${size.padStart(8)}${c.exists ? '' : '  (absent)'}`);
+    }
+    console.log(`    MEMORY_DB env: ${d.envMemoryDb || '(unset)'}`);
+    console.log(`    ~/.wmemrc:     ${d.rcMemoryDb || '(not set)'}`);
+    if (!d.rcMemoryDb && !d.envMemoryDb) {
+      console.log(`    ⚠ neither is set — run \`npx wmem init\` so the hooks and the server are pinned to one file.`);
+    }
     const w = splitWarning(dbResolution());
     if (w) console.log(`\n${w}`);
   }

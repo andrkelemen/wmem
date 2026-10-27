@@ -12,7 +12,7 @@
  * 5. Integrity checks (orphans, broken FTS, stale sessions)
  */
 
-import { getDb } from './db.mjs';
+import { getDb, activeDbPath } from './db.mjs';
 import { existsSync, statSync, readFileSync } from 'fs';
 import { createHash } from 'crypto';
 
@@ -454,7 +454,10 @@ export function getStatus() {
 
   // DB file size
   let dbSize = 0;
-  const dbPath = process.env.MEMORY_DB || './data/memory.db';
+  // The file the OPEN connection is actually using, not a fourth guess at it. This line
+  // used to carry its own './data/memory.db' fallback, so `wmem status` could report the
+  // size of a database it was not reading from. Reported 2026-10-27 alongside the split.
+  const dbPath = activeDbPath();
   try {
     dbSize = statSync(dbPath).size;
   } catch { }

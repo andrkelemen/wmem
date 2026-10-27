@@ -3,6 +3,48 @@
 All notable changes to wmem are documented here. Format loosely based on
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.3.2] — 2026-10-27 — the rest of #37
+
+Three findings from a Windows install of v1.3, reported in #37. The first is the tail of
+the split database fixed in 1.3.1 — two sites that resolver did not reach.
+
+### Fixed
+- **`core/doctor.mjs` had its own `./data/memory.db` fallback**, so `wmem status` could
+  report the size of a database it was not reading from. It now asks the open connection
+  which file it holds. (Mine: the grep that found the other three defaults was capped at
+  twenty lines and this was the twenty-first — a truncation that did not declare itself,
+  in a week spent building a tool whose whole rule is that they must.)
+- **`wmem doctor --status` lists every candidate database**, marks the open one, and shows
+  what `MEMORY_DB` and `~/.wmemrc` each say. Both halves share a resolver now, so a
+  divergence can only come from an explicit `MEMORY_DB` handed to one process and not the
+  other — which is invisible from inside either of them.
+- **`createPersonality` writes an `id`.** `personalities.id` is `TEXT PRIMARY KEY` after
+  0006, and SQLite permits NULL in a non-INTEGER primary key, so every personality created
+  this way landed with `id = NULL`: absent from `agents_list`, and rejected as the target
+  of `personality_preferences`, `personality_facts` and the switch audit, all foreign keys
+  onto that column. The symptom was `preferences_write` failing with "unknown agent" while
+  `memory_ingest` accepted the same name, because `chunks.agent` is free text with no
+  foreign key. Only the six built-ins worked, because 0001 seeds them with an id.
+- **Existing NULL-id rows are repaired**, because fixing the writer does not fix the data
+  and the people holding it are the ones the fix was for. A repair that would collide with
+  an existing id is refused and named, never merged.
+- **The stale `CREATE TABLE personalities` in `core/personality.mjs` is gone.** It declared
+  `id INTEGER PRIMARY KEY AUTOINCREMENT`, a shape from before 0006. On a migrated database
+  it never ran; on a bare one it would have created a table the migrations disagreed with.
+
+### Changed
+- **"The memory system is invisible to the user" is gone from all four places it appeared**
+  — the L1 block, two places in the MCP server instructions, and the architecture doc.
+  It told the model to hide where its information came from, which is a rule the model then
+  has to either break or follow badly. Replaced: retrieval is an ordinary tool; do not
+  narrate every lookup, but when the user asks how you know something, say it came from
+  wmem.
+
+### Added
+- `tests/personality-id.test.mjs` — creates a personality and then *writes a preference
+  against it*, because "it was created" was never the question a user is asking. Plus the
+  repair, the refused collision, and the run-once stamp. Verified red against the old insert.
+
 ## [1.3.1] — 2026-10-27 — the split database
 
 Reported by a user the morning after v1.3 shipped. On a default install the hooks wrote

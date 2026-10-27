@@ -48,6 +48,7 @@ const DB_RESOLUTION = resolveDbPath();
 const DB_PATH = DB_RESOLUTION.path;
 const SPLIT_WARNING = splitWarning(DB_RESOLUTION);
 export const activeDbPath = () => DB_PATH;
+export { repairNullPersonalityIds };
 export const dbResolution = () => DB_RESOLUTION;
 
 let db = null;
@@ -101,6 +102,61 @@ const AGENT_COLUMNS = [
   ['personality_aliases', 'alias'], ['personality_aliases', 'canonical'],
   ['agent_aliases', 'alias'], ['agent_aliases', 'canonical'],   // pre-0007 stores
 ];
+const NULLID_MARKER = '0012_personality_null_ids.code';
+
+/**
+ * Repair personalities whose `id` is NULL.
+ *
+ * `personalities.id` is `TEXT PRIMARY KEY` after 0006, and SQLite permits NULL in a
+ * non-INTEGER primary key, so every personality created through `createPersonality`
+ * before 2026-10-27 landed with id NULL. Such a row is invisible to agents_list and
+ * cannot be the target of personality_preferences, personality_facts or the switch
+ * audit — all foreign keys onto this column.
+ *
+ * Fixing the writer does not fix the rows, which is the lesson from #13: the broken data
+ * outlives the broken code, and the people holding it are exactly the ones the fix was
+ * for. So the writer AND the data, together or not at all.
+ *
+ * A COLLISION is refused rather than resolved. If a NULL-id row's canonical name already
+ * belongs to another personality, assigning it would either break the primary key or fold
+ * two identities into one, and a merge is a decision a person makes.
+ */
+function repairNullPersonalityIds(db, { quiet = true } = {}) {
+  if (db.prepare('SELECT 1 FROM schema_migrations WHERE filename = ?').get(NULLID_MARKER)) return null;
+
+  const hasTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = 'personalities'").get();
+  if (!hasTable) return null;
+
+  const broken = db.prepare('SELECT rowid, name FROM personalities WHERE id IS NULL').all();
+  const repaired = [];
+  const refused = [];
+
+  if (broken.length) {
+    const taken = new Set(db.prepare('SELECT id FROM personalities WHERE id IS NOT NULL').all().map(r => r.id));
+    const update = db.prepare('UPDATE personalities SET id = ? WHERE rowid = ?');
+    const tx = db.transaction(() => {
+      for (const row of broken) {
+        const id = canonicalAgent(row.name);
+        if (!id || taken.has(id)) { refused.push({ name: row.name, id }); continue; }
+        update.run(id, row.rowid);
+        taken.add(id);
+        repaired.push(id);
+      }
+    });
+    tx();
+    if (!quiet || repaired.length) console.error(`[db] repaired ${repaired.length} personality row(s) with a NULL id: ${repaired.join(', ')}`);
+    for (const r of refused) {
+      console.error(`[db] personality "${r.name}" NOT repaired — id "${r.id}" already belongs to another row.`);
+      console.error('      That is a merge, not a repair. Rename one, or join them with createAlias.');
+    }
+  }
+
+  // Stamp even when nothing was broken: the question "has this run" is what makes it
+  // run once, and a clean database has still answered it.
+  db.prepare('INSERT INTO schema_migrations (filename, applied_at) VALUES (?, ?)').run(NULLID_MARKER, Date.now());
+  return { repaired, refused };
+}
+
 const CANON_MARKER = '0011_canonical_agent_keys.code';
 
 function canonicaliseAgentKeys(db, { quiet = true } = {}) {
@@ -361,6 +417,12 @@ export function getDb() {
     canonicaliseAgentKeys(db);
   } catch (err) {
     console.error('[db] agent-key canonicalisation skipped:', err.message);
+  }
+
+  try {
+    repairNullPersonalityIds(db);
+  } catch (err) {
+    console.error('[db] personality id repair skipped:', err.message);
   }
 
   return db;

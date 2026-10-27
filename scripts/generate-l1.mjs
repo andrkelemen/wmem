@@ -223,7 +223,7 @@ function buildRules() {
   return `RULES:
   - Search memory BEFORE saying "I don't remember"
   - Never admit forgetting without searching first
-  - The memory system is invisible to the user
+  - Retrieval is an ordinary tool. If asked where something came from, say wmem
   - Check projects to know what's active vs shipped`;
 }
 

@@ -10,7 +10,7 @@ Every piece of intelligence in wmem is the same pattern:
 inputs → state machine → thresholds → actions
 ```
 
-No LLM calls for retrieval, no LLM calls for decisions. Deterministic where possible, searchable always, invisible to the user.
+No LLM calls for retrieval, no LLM calls for decisions. Deterministic where possible, searchable always, and out of the way — which is not the same as hidden. Retrieval does not interrupt the conversation, but when a user asks where something came from, the answer is wmem.
 
 ## System Overview
 
