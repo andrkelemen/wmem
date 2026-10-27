@@ -3,6 +3,56 @@
 All notable changes to wmem are documented here. Format loosely based on
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.4.0] — 2026-10-27 — the release where `npx wmem init` becomes true
+
+The README has said `npx wmem init` since v1.3a. **wmem has never been published to npm**,
+so that command has never worked for anyone — on the release whose entire thesis was
+download-and-run. This is the release that makes the sentence true, and everything in it
+was found by actually doing it: `npm pack`, install the tarball into an empty directory
+with an empty HOME, and watch.
+
+### Fixed
+- **Dependency detection asked the wrong question.** Step 3 checked whether
+  `WMEM_ROOT/node_modules/better-sqlite3` exists — true only for a git clone. Installed
+  from npm, node hoists dependencies to the *parent* `node_modules`, so the check failed
+  and setup ran `npm install --production` inside `node_modules/wmem`, installing into a
+  directory the host package manager owns. It now asks whether the module *resolves*,
+  which is the actual question.
+- **`--dry-run` wrote to disk.** On a machine with no wmem yet it left a real database
+  behind — WAL and SHM included — and printed "nothing was changed". Two unguarded calls:
+  a personality lookup in step 7 and the verification block in step 10. Reading opens the
+  database and opening it creates it, so on a fresh machine a read is a write.
+- **A clean first install reported failure.** Success was `stats.total > 0`, so a new
+  machine with no CLAUDE.md and no prior sessions — the exact state of a first install —
+  finished with *"setup finished with warnings — check above"*, where the warnings above
+  were "no CLAUDE.md found" and "no sessions directory". Nothing was wrong. An empty store
+  on day one is the correct outcome; it now says so.
+- **"Next steps" printed commands the reader cannot run.** `node scripts/personality.mjs …`
+  is runnable from a git clone only; installed from npm those files are inside
+  `node_modules`. Now absolute, and the hook check is `wmem doctor --hooks`. Same defect as
+  the reimport usage lines in 1.3.3 — advice that works on the author's machine is not
+  advice.
+
+### Added
+- **`license`, `repository`, `homepage` and `bugs` in `package.json`.** Without `license`
+  the registry page reads UNLICENSED regardless of the LICENSE file sitting beside it.
+- `tests/setup-dry-run.test.mjs` — asserts a dry run creates no database, no rc file and
+  nothing in the working directory. It pins the target with `--db`, because without that
+  the resolver finds the repo's own populated store and the check passes against broken
+  code: the first version of this test did exactly that. Both guards verified red
+  independently.
+
+### Verified, not assumed
+`npm pack` → install the tarball into a clean directory → `wmem init` against an empty
+HOME → `wmem doctor --status` reads the same store the install created, resolved through
+the `~/.wmemrc` setup wrote. The database lands in `~/.wmem/memory.db` and not inside
+`node_modules`, which is what the 1.3.1 split fix was for and this is the first time it has
+been proven on a real install.
+
+### Still your call
+`npm publish` itself. The package is ready — `wmem` is unclaimed on the registry — but
+publishing needs an `npm login` that only you can do.
+
 ## [1.3.3] — 2026-10-27 — documentation that recreated the bug
 
 #41. The split database was fixed in code and left standing in the usage text.

@@ -1,7 +1,16 @@
 {
   "name": "wmem",
-  "version": "1.3.3",
+  "version": "1.4.0",
   "description": "Standalone MCP server for AI agent memory continuity. FTS5 search, tiered retrieval, drift detection, multi-instance safety.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/andrkelemen/wmem.git"
+  },
+  "homepage": "https://github.com/andrkelemen/wmem#readme",
+  "bugs": {
+    "url": "https://github.com/andrkelemen/wmem/issues"
+  },
   "type": "module",
   "main": "mcp-server.mjs",
   "bin": {
