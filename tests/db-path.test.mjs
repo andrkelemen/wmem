@@ -81,6 +81,18 @@ try {
   check('rc supplies MEMORY_DB', env.MEMORY_DB === '/tmp/from-rc.db', env);
   check('rc does not clobber a real environment', loadRc({ MEMORY_DB: '/keep.db' }, rcPath).MEMORY_DB === '/keep.db', 'clobbered');
 
+  // 5b. The doctor's view must include an explicit MEMORY_DB even when it is nowhere near
+  //     a default location — otherwise the one report a person reads after losing sessions
+  //     omits the very file they are reading from.
+  const { describeDbCandidates } = await import(join(ROOT, 'core', 'db-path.mjs'));
+  const off = join(elsewhere, 'somewhere-else.db');
+  populate(off);
+  const d = describeDbCandidates({ env: { MEMORY_DB: off }, cwd: elsewhere, home });
+  check('the report marks exactly one active database',
+    d.candidates.filter(c => c.active).length === 1, d.candidates);
+  check('an off-list MEMORY_DB still appears in the report',
+    d.active === off && d.candidates.some(c => c.path === off), d);
+
   // 6. THE REGRESSION ITSELF: the hooks and the server must resolve to the same file.
   //    Run in a child so the hook module's import-time work is real, not mocked.
   const probe = `

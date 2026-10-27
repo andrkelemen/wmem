@@ -12,33 +12,23 @@
  * Storage: personalities table in the same SQLite DB.
  */
 
-import { getDb } from './db.mjs';
+import { getDb, canonicalAgent } from './db.mjs';
 
 // ── Schema ──────────────────────────────────────────
 
 function initTable() {
   const db = getDb();
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS personalities (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL UNIQUE,
-      display_name TEXT,
-      description TEXT,
-      system_prompt TEXT,
-      voice TEXT,
-      capabilities TEXT,
-      restrictions TEXT,
-      born TEXT,
-      avatar TEXT,
-      metadata TEXT,
-      active INTEGER NOT NULL DEFAULT 0,
-      created_at INTEGER,
-      updated_at INTEGER
-    )
-  `);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_personalities_active ON personalities(active)`);
 
-  // Personality files — named documents per personality (identity, preferences, notes)
+  // The `personalities` table is NOT created here. It belongs to migration 0006, which
+  // renamed `agents` — whose primary key is `id TEXT`, seeded with lowercase ids. The
+  // CREATE TABLE that used to sit here declared `id INTEGER PRIMARY KEY AUTOINCREMENT`,
+  // a shape from before that rename. On a migrated database it never ran, so it was
+  // invisible; on a bare one it would have created a table the migrations then disagreed
+  // with. A schema described in two places is a schema with a wrong copy — and this copy
+  // was wrong. Reported 2026-10-27.
+  //
+  // personality_files has no migration of its own and is still created here. 0008 refers
+  // to it as existing; nothing creates it but this.
   db.exec(`
     CREATE TABLE IF NOT EXISTS personality_files (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,11 +67,26 @@ export function createPersonality({
   initTable();
   const now = Date.now();
 
+  // WRITE THE ID. `personalities.id` is `TEXT PRIMARY KEY` after 0006, and SQLite permits
+  // NULL in a non-INTEGER primary key — so omitting it inserted a row with id NULL that
+  // looked fine and was unusable: invisible to agents_list, and unusable as the target of
+  // personality_preferences, personality_facts or the switch audit, all of which are
+  // foreign keys onto this column. The symptom was preferences_write failing with
+  // "unknown agent: <name>" while memory_ingest accepted the same name, because
+  // chunks.agent is free text with no foreign key. Only the six built-ins worked, because
+  // 0001 seeds them WITH an id. Reported 2026-10-27.
+  //
+  // The id is the canonical (trimmed, lowercased) form of the name, matching both the
+  // seeded built-ins (id 'aurora', name 'Aurora') and #13's rule that identity lookups do
+  // not vary by case.
+  const id = canonicalAgent(name);
+
   db.prepare(`
-    INSERT INTO personalities (name, display_name, description, system_prompt, voice,
+    INSERT INTO personalities (id, name, display_name, description, system_prompt, voice,
       capabilities, restrictions, born, avatar, metadata, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
+    id,
     name,
     displayName || name,
     description || '',
@@ -95,7 +100,7 @@ export function createPersonality({
     now, now
   );
 
-  return { created: true, name };
+  return { created: true, name, id };
 }
 
 /**

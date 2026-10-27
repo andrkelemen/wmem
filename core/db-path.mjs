@@ -125,6 +125,39 @@ export function dbPath(opts = {}) {
 }
 
 /**
+ * Every candidate location with what is actually in it, for `wmem doctor`.
+ *
+ * The acceptance condition on the report was that the doctor FLAGS a divergence rather
+ * than merely resolving one. Both halves share a resolver now, so they can only diverge
+ * through an explicit MEMORY_DB given to one process and not the other — which is
+ * invisible from inside either. So show the whole picture: every place a wmem database
+ * has ever been put, which one is open, and what the rc file says, in one view.
+ */
+export function describeDbCandidates({ cwd = process.cwd(), home = homedir(), pkgRoot = PKG_ROOT, env = process.env } = {}) {
+  const active = resolveDbPath({ env: { ...env }, cwd, home, pkgRoot, rc: true });
+  const rcEnv = loadRc({}, join(home, '.wmemrc'));
+  const rows = candidateDbPaths({ cwd, home, pkgRoot }).map((path) => {
+    let bytes = null;
+    try { bytes = existsSync(path) ? statSync(path).size : null; } catch {}
+    return { path, exists: bytes !== null, bytes, active: path === active.path };
+  });
+  // An explicit MEMORY_DB can point somewhere not on the candidate list at all.
+  if (!rows.some(r => r.active)) {
+    let bytes = null;
+    try { bytes = existsSync(active.path) ? statSync(active.path).size : null; } catch {}
+    rows.unshift({ path: active.path, exists: bytes !== null, bytes, active: true });
+  }
+  return {
+    active: active.path,
+    source: active.source,
+    envMemoryDb: env.MEMORY_DB || null,
+    rcMemoryDb: rcEnv.MEMORY_DB || null,
+    candidates: rows,
+    populated: rows.filter(r => r.bytes > 0).length,
+  };
+}
+
+/**
  * One line of warning, or null. Written once here so the server, the hooks and the doctor
  * all say the same sentence — a split that is described differently in three places reads
  * as three unrelated oddities.
