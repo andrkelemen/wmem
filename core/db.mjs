@@ -1320,21 +1320,33 @@ export function materializeTopicRelations() {
   const db = getDb();
   const now = Date.now();
 
-  // Clear old topic-topic relations
-  db.prepare("DELETE FROM kg_relations WHERE source_type = 'topic' AND target_type = 'topic'").run();
-
-  // Build co-occurrence: tags that appear in the same sessions
+  // CO-OCCURRENCE IS A SESSION-LEVEL FACT, SO COUNT IT AT SESSION LEVEL.
+  //
+  // This used to join tags→chunks→chunks→tags, pairing every chunk in a session with every
+  // other chunk in the same session. That is quadratic in chunks per session, and a long
+  // session is exactly the one you most want indexed: on a 46.5k-chunk store with 5,543
+  // tagged chunks in one session it took 191 SECONDS. Claude Code kills an exit hook long
+  // before that, so SessionEnd died here, `recordFire` never ran, and `doctor --hooks` kept
+  // showing a stale "last fired" while the index, the enqueue and the bookmark had all
+  // actually succeeded. Reported 2026-10-27.
+  //
+  // The pair count the join computed (`co_count`) was never used — only
+  // COUNT(DISTINCT session_id) reached the insert. So the entire quadratic step existed to
+  // produce a number that was thrown away. Reduce to DISTINCT (session, tag) first and the
+  // self-join is bounded by tags per session instead of chunks per session, which is the
+  // quantity the answer actually depends on.
   const pairs = db.prepare(`
-    SELECT t1.tag as source, t2.tag as target,
-           COUNT(DISTINCT c1.session_id) as session_count,
-           COUNT(*) as co_count
-    FROM tags t1
-    JOIN chunks c1 ON c1.id = t1.chunk_id
-    JOIN chunks c2 ON c2.session_id = c1.session_id AND c2.id != c1.id
-    JOIN tags t2 ON t2.chunk_id = c2.id
-    WHERE t1.tag < t2.tag AND c1.session_id IS NOT NULL
-    GROUP BY t1.tag, t2.tag
-    HAVING session_count >= 2
+    WITH session_tags AS (
+      SELECT DISTINCT c.session_id AS sid, t.tag AS tag
+      FROM tags t
+      JOIN chunks c ON c.id = t.chunk_id
+      WHERE c.session_id IS NOT NULL
+    )
+    SELECT a.tag AS source, b.tag AS target, COUNT(*) AS session_count
+    FROM session_tags a
+    JOIN session_tags b ON b.sid = a.sid AND a.tag < b.tag
+    GROUP BY a.tag, b.tag
+    HAVING COUNT(*) >= 2
   `).all();
 
   const insert = db.prepare(`
@@ -1342,7 +1354,13 @@ export function materializeTopicRelations() {
     VALUES ('topic', ?, 'related_to', 'topic', ?, ?, ?, ?, ?)
   `);
 
+  // THE DELETE BELONGS INSIDE THE TRANSACTION. It used to run on its own, before the slow
+  // query and outside the insert, so a kill between the two committed the delete and never
+  // ran the inserts — every killed session end left the topic graph EMPTY. A rebuild that
+  // can destroy and then fail to rebuild is worse than no rebuild: it turns a timeout into
+  // data loss. Inside the transaction, a kill leaves the previous graph exactly as it was.
   const tx = db.transaction(() => {
+    db.prepare("DELETE FROM kg_relations WHERE source_type = 'topic' AND target_type = 'topic'").run();
     for (const p of pairs) {
       insert.run(p.source, p.target, p.session_count, p.session_count, now, now);
     }
@@ -1360,15 +1378,15 @@ export function materializeDirectoryRelations() {
   const db = getDb();
   const now = Date.now();
 
-  // Clear old directory edges
-  db.prepare("DELETE FROM kg_relations WHERE source_type = 'directory' OR target_type = 'directory'").run();
-
   const insert = db.prepare(`
     INSERT OR REPLACE INTO kg_relations (source_type, source, relation, target_type, target, weight, session_count, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
+  // Same shape as the topic builder: the clear goes INSIDE the rebuild, so an interruption
+  // leaves the old edges rather than none.
   const tx = db.transaction(() => {
+    db.prepare("DELETE FROM kg_relations WHERE source_type = 'directory' OR target_type = 'directory'").run();
     // directory → project edges
     const dirProjects = db.prepare(`
       SELECT directory, project_name, COUNT(*) as session_count

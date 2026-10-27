@@ -23,6 +23,7 @@ import {
 } from '../core/doctor.mjs';
 import { getDb, dbResolution } from '../core/db.mjs';
 import { splitWarning, describeDbCandidates } from '../core/db-path.mjs';
+import { findMisfiledDefault, adoptDefaultRows } from '../core/doctor.mjs';
 import { scanSecrets } from '../core/secret-patterns.mjs';
 
 const args = process.argv.slice(2);
@@ -72,7 +73,45 @@ if (command === '--status' || command === 'status') {
     const w = splitWarning(dbResolution());
     if (w) console.log(`\n${w}`);
   }
+  {
+    // Rows filed under `default` by the pre-2026-10-27 SessionEnd hook. Surfaced here
+    // because the symptom people actually hit — "No session bookmarks found" — gives no
+    // hint that the rows exist at all, let alone where.
+    const m = findMisfiledDefault();
+    if (m.total > 0) {
+      console.log(`\n  ⚠ ${m.total} row(s) filed under agent "default":`);
+      for (const [k, n] of Object.entries(m.counts)) console.log(`      ${String(n).padStart(7)}  ${k}`);
+      if (m.target) {
+        console.log(`    These predate the SessionEnd agent fix. Move them to "${m.target}":`);
+        console.log(`      wmem doctor --adopt-default            (preview)`);
+        console.log(`      wmem doctor --adopt-default --force    (apply)`);
+      } else {
+        console.log(`    More than one personality exists and none is active, so I will not guess.`);
+        console.log(`      wmem doctor --adopt-default --to <personality> --force`);
+      }
+    }
+  }
 
+} else if (command === '--adopt-default') {
+  const to = getArg('--to');
+  const res = adoptDefaultRows({ to, dryRun: !flags.has('--force') });
+  if (res.refused) {
+    console.error(`refused: ${res.reason}`);
+    process.exit(1);
+  }
+  if (res.dryRun) {
+    if (!res.wouldMove) { console.log('nothing filed under default'); }
+    else {
+      console.log(`DRY RUN — would move ${res.wouldMove} row(s) from "default" to "${res.target}":`);
+      for (const [k, n] of Object.entries(res.detail)) console.log(`  ${String(n).padStart(7)}  ${k}`);
+      console.log('re-run with --force to apply.');
+    }
+  } else if (!res.moved) {
+    console.log(res.reason || 'nothing to move');
+  } else {
+    console.log(`moved ${res.moved} row(s) to "${res.target}":`);
+    for (const [k, n] of Object.entries(res.detail)) console.log(`  ${String(n).padStart(7)}  ${k}`);
+  }
 } else if (command === '--fix' || command === 'fix') {
   const result = autoFix();
   if (result.fixed) {

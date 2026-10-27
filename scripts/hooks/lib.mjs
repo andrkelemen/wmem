@@ -26,6 +26,36 @@ export const WMEM_ROOT = process.env.WMEM_DIR || resolve(dirname(fileURLToPath(i
 // the one channel that could have reconciled the split store, and only the hooks used it.
 export { loadRc } from '../../core/db-path.mjs';
 
+/**
+ * Which personality this session belongs to.
+ *
+ * ONE LOOKUP, SHARED BY BOTH SESSION HOOKS. session-start resolved the active personality
+ * and session-end did not, so with WMEM_AGENT unset every session end filed its work under
+ * `default`: the bookmark, the preference-queue row and the tail-of-session index. The
+ * visible symptom was `memory_last_session` answering "No session bookmarks found" for the
+ * real personality while hundreds of bookmarks sat under `default`, for months. Reported
+ * 2026-10-27.
+ *
+ * The two hooks each had their own copy of one decision, which is the same defect as the
+ * three database defaults — the fix is not to correct the second copy, it is to stop there
+ * being a second copy.
+ *
+ * NOT folded into config(). PostToolUse calls config() once per tool call, and this opens
+ * the database to read the active personality; putting it there would put a DB open on the
+ * per-keystroke path to fix a per-session bug.
+ */
+let _agent;
+export async function resolveAgent(cfg = config()) {
+  if (_agent !== undefined) return _agent;
+  if (cfg.agent) return (_agent = cfg.agent);          // WMEM_AGENT wins, as before
+  let active = null;
+  try {
+    const mod = await import('../../core/personality.mjs');
+    active = mod.getActivePersonality?.() || null;
+  } catch { }
+  return (_agent = active?.name || 'default');
+}
+
 export function config() {
   // ONE resolver, shared with core/db.mjs and the migration runner. This used to default
   // to a path under the home directory while core defaulted to a cwd-relative one, so the hooks wrote

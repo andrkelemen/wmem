@@ -3,6 +3,64 @@
 All notable changes to wmem are documented here. Format loosely based on
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.4.1] — 2026-10-27 — SessionEnd filed everything under `default`, and the graph rebuild destroyed before it worked
+
+#44, from the same Windows install. Three findings, two of them data-losing.
+
+### Fixed
+- **SessionEnd ignored the active personality.** `session-start.mjs` resolved it;
+  `session-end.mjs` read its own `cfg.agent || 'default'`. With `WMEM_AGENT` unset — the
+  normal case — every session end filed its bookmark, its preference-queue row and the
+  tail of its index under `default`. The visible symptom was `memory_last_session`
+  answering "No session bookmarks found" for the real personality while hundreds of
+  bookmarks sat under `default`, going back months.
+
+  Both hooks now call one `resolveAgent()` in `scripts/hooks/lib.mjs`. **Two copies of one
+  decision is the same defect as the three database defaults** — the fix is not to correct
+  the second copy, it is to stop there being a second copy. It is deliberately *not* in
+  `config()`: PostToolUse calls that once per tool call and this opens the database.
+
+- **`wmem doctor --adopt-default`** finds rows filed under `default` beside a real
+  personality and moves them, after a preview. It refuses to guess when several
+  personalities exist and none is active. `session_bookmarks` and `preference_review_queue`
+  were in neither the agent-canonicalisation list nor any foreign key, which is why no
+  earlier repair touched them — a table no list knows about keeps its bugs quietly.
+
+- **The topic-graph rebuild deleted before it did the work that replaces it.** The DELETE
+  ran outside the insert transaction, so an interruption between the two committed the
+  delete and never ran the inserts: **every killed session end left the topic graph
+  empty.** Both rebuilds now clear inside their transaction, so an interruption leaves the
+  previous graph exactly as it was. A rebuild that can destroy and then fail to rebuild
+  turns a timeout into data loss.
+
+- **That rebuild was quadratic in chunks per session.** It joined every chunk in a session
+  to every other chunk in the same session — and the pair count it computed was never
+  used, only `COUNT(DISTINCT session_id)` reached the insert, so the whole quadratic step
+  produced a number that was discarded. Reduced to `DISTINCT (session, tag)` first.
+  Measured on a 380,907-chunk store with 69,069 tagged chunks in one session: the old
+  query **did not finish in 300 seconds**; the new one returns the same 990 edges in
+  **1.38 seconds**.
+
+- **The SessionEnd canary is stamped per step**, not once at the end. It was the last
+  thing in the queue, so a hook killed during the slow rebuild recorded nothing and
+  `doctor --hooks` showed a stale "last fired" while the index, the enqueue and the
+  bookmark had all succeeded. A record written only on success cannot describe a failure.
+
+- **`doctor --status` listed one database twice** when `~/.wmemrc` gave `MEMORY_DB` with
+  forward slashes on Windows. Paths are normalised where they enter rather than at every
+  comparison downstream.
+
+### Added
+- `tests/session-end-agent.test.mjs` and `tests/kg-rebuild.test.mjs`.
+
+  One of these is worth describing honestly: **the timing test for the quadratic join
+  cannot catch it.** At a size a suite can afford — 1,000 chunks, 4 tags — the old query
+  still finishes well inside any sane threshold, and restoring it leaves every timing
+  assertion green. The cost only appears on a real store, which is where the user found it
+  and where a test will never be. So the detector asserts the query *shape*, and the
+  timing check is labelled in the file as the loose backstop it is rather than the
+  coverage it is not.
+
 ## [1.4.0] — 2026-10-27 — the release where `npx wmem init` becomes true
 
 The README has said `npx wmem init` since v1.3a. **wmem has never been published to npm**,
