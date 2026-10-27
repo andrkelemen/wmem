@@ -14,12 +14,12 @@
 
   Every case below has been checked red against the pre-fix defaults.
 */
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, relative } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
@@ -92,6 +92,34 @@ try {
     d.candidates.filter(c => c.active).length === 1, d.candidates);
   check('an off-list MEMORY_DB still appears in the report',
     d.active === off && d.candidates.some(c => c.path === off), d);
+
+  // 5c. NO SOURCE FILE MAY CARRY ITS OWN `data/memory.db`, in code OR in a usage example.
+  //     The bug came back twice after the resolver landed — once as a live fallback in
+  //     core/doctor.mjs, once as four copy-paste lines in scripts/reimport.mjs that told
+  //     the reader to recreate the split by hand. Documentation that hands out a
+  //     cwd-relative path is the same defect as code that defaults to one, and a reviewer
+  //     reading a diff will not catch either. So the repo checks itself.
+  const skip = new Set(['node_modules', '.git', 'data', 'tests']);
+  const allowed = (f) => f.endsWith('core/db-path.mjs') || f.endsWith('CHANGELOG.md');
+  const offenders = [];
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (skip.has(e.name)) continue;
+      const full = join(dir, e.name);
+      if (e.isDirectory()) { walk(full); continue; }
+      if (!/\.(mjs|js|md|sh)$/.test(e.name)) continue;
+      if (allowed(full)) continue;
+      const text = readFileSync(full, 'utf8');
+      for (const [i, line] of text.split('\n').entries()) {
+        // A relative path ending in memory.db. An absolute one is a deliberate choice.
+        if (/(^|[^/\w])\.?\.?\/?data\/memory\.db/.test(line) && !/\$\{|<install>/.test(line)) {
+          offenders.push(`${relative(ROOT, full)}:${i + 1}: ${line.trim().slice(0, 90)}`);
+        }
+      }
+    }
+  };
+  walk(ROOT);
+  check('no file carries its own relative data/memory.db', offenders.length === 0, offenders);
 
   // 6. THE REGRESSION ITSELF: the hooks and the server must resolve to the same file.
   //    Run in a child so the hook module's import-time work is real, not mocked.

@@ -3,10 +3,17 @@
  * reimport.mjs — CLI for backfill enrichment on existing indexed data
  *
  * Usage:
- *   MEMORY_DB=./data/memory.db node scripts/reimport.mjs [--agent myname] [--dry-run] [--verbose]
- *   MEMORY_DB=./data/memory.db node scripts/reimport.mjs --facts-only
- *   MEMORY_DB=./data/memory.db node scripts/reimport.mjs --bookmarks-only
- *   MEMORY_DB=./data/memory.db node scripts/reimport.mjs --kg-only
+ *   node scripts/reimport.mjs [--agent myname] [--dry-run] [--verbose]
+ *   node scripts/reimport.mjs --facts-only
+ *   node scripts/reimport.mjs --bookmarks-only
+ *   node scripts/reimport.mjs --kg-only
+ *
+ * The database comes from core/db-path.mjs, the same resolver the MCP server and the hooks
+ * use. These lines used to pin MEMORY_DB to a cwd-relative path under the install directory
+ * — copying them from a different directory enriched a second, empty store and reported
+ * success. That is the split database of 2026-10-27, reproduced by hand from the
+ * documentation. Pass MEMORY_DB only when you deliberately mean another file, and then
+ * make it absolute.
  */
 
 import { runReimport } from '../core/reimport.mjs';

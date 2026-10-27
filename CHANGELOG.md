@@ -3,6 +3,27 @@
 All notable changes to wmem are documented here. Format loosely based on
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.3.3] — 2026-10-27 — documentation that recreated the bug
+
+#41. The split database was fixed in code and left standing in the usage text.
+
+### Fixed
+- **`scripts/reimport.mjs` no longer tells you to pin `MEMORY_DB` to a cwd-relative path.**
+  Four usage lines read `MEMORY_DB=./data/memory.db node scripts/reimport.mjs …`. Copied
+  from any other directory they enrich a second, empty store and report success — the
+  split database, reproduced by hand, from the documentation. Documentation that hands out
+  a relative path is the same defect as code that defaults to one.
+- **`mcp-server.mjs`'s header** no longer claims storage lives at `data/memory.db`; it
+  names the resolver and its order.
+- `core/doctor.mjs:457`, also listed in #41, was fixed in 1.3.2.
+
+### Added
+- **The repo now checks itself.** `tests/db-path.test.mjs` walks every `.mjs`, `.js`, `.md`
+  and `.sh` file and fails if any carries a relative `data/memory.db`, in code *or* in a
+  comment. The bug returned twice after the resolver landed — once as a live fallback, once
+  as copy-paste usage text — and neither is something a reviewer reliably catches in a
+  diff. Only `core/db-path.mjs` and this changelog may name the old path.
+
 ## [1.3.2] — 2026-10-27 — the rest of #37
 
 Three findings from a Windows install of v1.3, reported in #37. The first is the tail of
