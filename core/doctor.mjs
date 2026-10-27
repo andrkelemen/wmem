@@ -561,3 +561,94 @@ export function autoFix() {
 
   return { fixed: fixes.length > 0, fixes };
 }
+
+// ── Rows filed under `default` while a real personality is active ──────────────
+//
+// Until 2026-10-27 the SessionEnd hook resolved its agent as `cfg.agent || 'default'`
+// while SessionStart resolved the active personality. With WMEM_AGENT unset, every
+// session end therefore filed its bookmark, its preference-queue row and the tail of its
+// index under `default`. The visible symptom was `memory_last_session` answering "No
+// session bookmarks found" for months while hundreds of bookmarks sat under `default`.
+//
+// Fixing the hook does not move the rows, and the people holding them are the ones the
+// fix was for — the same lesson as #13 and the NULL personality ids. So: find them, say
+// how many and where, and move them only on an explicit instruction.
+//
+// `session_bookmarks` and `preference_review_queue` are both here and in NEITHER the
+// agent-canonicalisation list nor any foreign key, which is why neither earlier repair
+// touched them. A table that no list knows about is a table that silently keeps its bugs.
+const DEFAULT_FILED_COLUMNS = [
+  ['chunks', 'agent'],
+  ['sessions', 'agent'],
+  ['facts', 'agent'],
+  ['preference_signals', 'agent'],
+  ['session_bookmarks', 'agent'],
+  ['preference_review_queue', 'personality_id'],
+];
+
+export function findMisfiledDefault() {
+  const db = getDb();
+  const hasTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?");
+
+  let active = null;
+  try { active = db.prepare('SELECT id, name FROM personalities WHERE active = 1').get() || null; } catch { }
+
+  const counts = {};
+  let total = 0;
+  for (const [table, col] of DEFAULT_FILED_COLUMNS) {
+    if (!hasTable.get(table)) continue;
+    let n = 0;
+    try { n = db.prepare(`SELECT COUNT(*) c FROM ${table} WHERE ${col} = 'default'`).get().c; } catch { continue; }
+    if (n > 0) { counts[`${table}.${col}`] = n; total += n; }
+  }
+
+  // Who the rows would belong to. Refuse to guess when the answer is not unique.
+  let others = [];
+  try {
+    others = db.prepare("SELECT id FROM personalities WHERE id IS NOT NULL AND id != 'default'").all().map(r => r.id);
+  } catch { }
+
+  const target = active && active.id && active.id !== 'default' ? active.id
+    : (others.length === 1 ? others[0] : null);
+
+  return {
+    active: active ? active.id : null,
+    counts,
+    total,
+    target,
+    ambiguous: !target && others.length > 1 ? others : null,
+  };
+}
+
+export function adoptDefaultRows({ to = null, dryRun = true } = {}) {
+  const db = getDb();
+  const found = findMisfiledDefault();
+  const target = to || found.target;
+
+  if (!found.total) return { moved: 0, target: null, reason: 'nothing filed under default' };
+  if (!target) {
+    return {
+      moved: 0, target: null,
+      refused: true,
+      reason: found.ambiguous
+        ? `more than one personality exists (${found.ambiguous.join(', ')}) and none is active — name one with --to`
+        : 'no personality to move these to',
+    };
+  }
+  if (target === 'default') return { moved: 0, target, refused: true, reason: 'target is default' };
+
+  if (dryRun) return { moved: 0, wouldMove: found.total, detail: found.counts, target, dryRun: true };
+
+  let moved = 0;
+  const detail = {};
+  const tx = db.transaction(() => {
+    for (const [table, col] of DEFAULT_FILED_COLUMNS) {
+      if (!found.counts[`${table}.${col}`]) continue;
+      const r = db.prepare(`UPDATE ${table} SET ${col} = ? WHERE ${col} = 'default'`).run(target);
+      detail[`${table}.${col}`] = r.changes;
+      moved += r.changes;
+    }
+  });
+  tx();
+  return { moved, detail, target };
+}

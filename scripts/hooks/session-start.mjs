@@ -7,7 +7,7 @@
  * python3 pipeline with a sed+awk fallback behind it, which is two escaping
  * implementations that could disagree — and the one that ran depended on the host.
  */
-import { config, runScript, recordFire } from './lib.mjs';
+import { config, runScript, recordFire, resolveAgent } from './lib.mjs';
 
 const cfg = config();
 
@@ -20,7 +20,7 @@ try {
   if (active) p = { agent: active.name, born: active.born || null, l1: mod.buildPersonalityL1?.(active) || null };
 } catch {}
 
-const agent = cfg.agent || p?.agent || 'default';
+const agent = await resolveAgent(cfg);   // shared with SessionEnd; see lib.mjs
 const born = cfg.born || p?.born || null;
 
 // 2. Incremental index. stdout is reserved for the hook's JSON, so this must stay quiet.

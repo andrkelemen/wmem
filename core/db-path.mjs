@@ -74,8 +74,10 @@ export function loadRc(env = process.env, rcPath = join(homedir(), '.wmemrc')) {
  * checkout, and an untestable case is how this bug reached a release.
  */
 export function candidateDbPaths({ cwd = process.cwd(), home = homedir(), pkgRoot = PKG_ROOT } = {}) {
+  // resolve() every entry so the Set dedupes on one spelling. Two spellings of one file is
+  // how `doctor --status` came to list the same database twice.
   return [...new Set([
-    canonicalDb(home),
+    resolve(canonicalDb(home)),
     resolve(pkgRoot, 'data', 'memory.db'),
     resolve(cwd, 'data', 'memory.db'),
   ])];
@@ -96,8 +98,12 @@ export function resolveDbPath({ env = process.env, cwd = process.cwd(), rc = tru
   if (rc) loadRc(env, join(home, '.wmemrc'));
 
   if (env.MEMORY_DB) {
-    const p = isAbsolute(env.MEMORY_DB) ? env.MEMORY_DB : resolve(cwd, env.MEMORY_DB);
-    return { path: p, source: 'MEMORY_DB', rejected: [] };
+    // resolve() even when the path is already absolute: on Windows `C:/Users/...` from the
+    // rc file and `C:\\Users\\...` from the package are the SAME FILE and compare unequal
+    // as strings, which listed one database twice in `wmem doctor --status`. Reported
+    // 2026-10-27. Normalising at the single point where a path enters is cheaper than
+    // every comparison downstream remembering to.
+    return { path: resolve(isAbsolute(env.MEMORY_DB) ? env.MEMORY_DB : join(cwd, env.MEMORY_DB)), source: 'MEMORY_DB', rejected: [] };
   }
 
   const populated = candidateDbPaths({ cwd, home, pkgRoot }).filter(hasData);
@@ -142,6 +148,8 @@ export function describeDbCandidates({ cwd = process.cwd(), home = homedir(), pk
     return { path, exists: bytes !== null, bytes, active: path === active.path };
   });
   // An explicit MEMORY_DB can point somewhere not on the candidate list at all.
+  // The active path is already resolve()d, and so is every candidate, so this comparison
+  // is now between one spelling and one spelling.
   if (!rows.some(r => r.active)) {
     let bytes = null;
     try { bytes = existsSync(active.path) ? statSync(active.path).size : null; } catch {}
