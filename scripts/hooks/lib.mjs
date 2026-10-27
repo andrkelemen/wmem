@@ -28,7 +28,7 @@ export { loadRc } from '../../core/db-path.mjs';
 
 export function config() {
   // ONE resolver, shared with core/db.mjs and the migration runner. This used to default
-  // to ~/.wmem/memory.db while core defaulted to ./data/memory.db, so the hooks wrote
+  // to a path under the home directory while core defaulted to a cwd-relative one, so the hooks wrote
   // every session into a store the MCP tools never opened.
   const resolution = resolveDbPath();
   const warn = splitWarning(resolution);

@@ -59,7 +59,8 @@ if (sub && (!sub.startsWith('-') || ['--help', '-h'].includes(sub))) {
  *   stats          — index statistics
  *
  * Transport: stdio (standard MCP protocol)
- * Storage: SQLite + FTS5 at data/memory.db
+ * Storage: SQLite + FTS5. The path is resolved by core/db-path.mjs — $MEMORY_DB,
+ *          else an existing store, else ~/.wmem/memory.db. Never cwd-relative.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
