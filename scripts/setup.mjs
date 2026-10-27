@@ -23,6 +23,7 @@ import { join, dirname, resolve } from 'path';
 import { homedir, platform as osPlatform } from 'os';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
+import { createRequire } from 'module';
 import { resolveDbPath, splitWarning } from '../core/db-path.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -156,9 +157,22 @@ if (claudeVersion) {
 
 step(3, 'Installing dependencies');
 
-const hasNodeModules = existsSync(join(WMEM_ROOT, 'node_modules', 'better-sqlite3'));
+// ASK WHETHER IT RESOLVES, NOT WHETHER A DIRECTORY EXISTS AT A GUESSED PATH.
+// This used to check `WMEM_ROOT/node_modules/better-sqlite3`, which is only where the
+// dependency lives for a git clone. Installed from npm, node hoists it to the PARENT
+// node_modules, so the check failed and setup ran `npm install --production` inside
+// node_modules/wmem — installing into a package directory the host package manager owns.
+// Resolution is the actual question: can this process import the module from here.
+let hasNodeModules = false;
+let depsFrom = null;
+try {
+  depsFrom = createRequire(import.meta.url).resolve('better-sqlite3');
+  hasNodeModules = true;
+} catch { }
+
 if (hasNodeModules) {
-  ok('dependencies already installed');
+  ok(`dependencies already installed`);
+  log(`  via ${depsFrom.replace(/\/node_modules\/better-sqlite3\/.*$/, '/node_modules')}`);
 } else if (flags.dryRun) {
   log('would run: npm install --production');
 } else {
@@ -259,9 +273,18 @@ if (existsSync(projectsDir)) {
 step(7, 'Setting up personality');
 
 const { getPersonality, createPersonality, activatePersonality } = await import('../core/personality.mjs');
-const existing = getPersonality(agent);
 
-if (existing) {
+// READING OPENS THE DATABASE, AND OPENING IT CREATES IT. This lookup ran unconditionally,
+// so `wmem init --dry-run` on a machine with no wmem yet left a real store (and its WAL
+// files) behind while reporting "no changes". Found by installing the packed tarball
+// against an empty HOME and listing what appeared. On a machine that already has a
+// database, reading is harmless and makes the dry run more useful — so ask only then.
+const dbExistsAlready = existsSync(wmemDb);
+const existing = (!flags.dryRun || dbExistsAlready) ? getPersonality(agent) : null;
+
+if (flags.dryRun && !dbExistsAlready) {
+  log(`would create personality: ${agent}  (no database yet, so nothing was read)`);
+} else if (existing) {
   ok(`personality "${agent}" exists`);
   if (!flags.dryRun) activatePersonality(agent);
   ok('activated');
@@ -338,6 +361,18 @@ if (flags.dryRun) {
 
 step(10, 'Verification');
 
+// A DRY RUN MUST NOT WRITE. This block opens the database — which creates the file and
+// applies migrations — and it ran unconditionally, so `wmem init --dry-run` on a clean
+// machine left a real store behind and still called itself "no changes". Found by running
+// the packed tarball against an empty HOME and then listing what appeared in it. A report
+// that does not match what happened is the defect this whole release is about.
+if (flags.dryRun) {
+  log('would open the database, apply migrations and verify the MCP registration');
+  log('(skipped: this is a dry run, and opening the database would create it)');
+  console.log('\nwmem setup complete (dry run — nothing was changed)\n');
+  process.exit(0);
+}
+
 // Verify DB
 const { getStats } = await import('../core/db.mjs');
 const { getActivePersonality } = await import('../core/personality.mjs');
@@ -382,19 +417,36 @@ if (claudeVersion && !flags.dryRun) {
 
 // ── Done ────────────────────────────────────────────────
 
-if (stats.total > 0 && active) {
-  console.log('\n✓ wmem is ready.\n');
-} else if (flags.dryRun) {
+// SUCCESS IS NOT "THERE IS ALREADY DATA". This read `stats.total > 0 && active`, so a
+// brand-new machine with no CLAUDE.md and no prior sessions — the exact state of a first
+// install — finished with "setup finished with warnings — check above", where the two
+// things above were "no CLAUDE.md found" and "no sessions directory". Nothing was wrong.
+// An empty store on day one is the correct outcome, and telling a first-time user their
+// install is suspect is first contact on a release whose thesis is download-and-run.
+//
+// What actually has to be true: the database opened, migrations applied, a personality is
+// active. Those are asserted above and we would not be here otherwise.
+if (flags.dryRun) {
   console.log('\n✓ dry run complete. run without --dry-run to apply.\n');
+} else if (active) {
+  console.log('\n✓ wmem is ready.\n');
+  if (stats.total === 0) {
+    console.log('Nothing existing to import — no CLAUDE.md and no prior sessions found.');
+    console.log('That is normal on a new machine. wmem starts recording from your next session.\n');
+  }
 } else {
-  console.log('\n⚠ setup finished with warnings — check above.\n');
+  console.log('\n⚠ setup finished without an active personality — check above.\n');
 }
 
+// Commands a person can actually paste. `node scripts/...` is only runnable from a git
+// clone; installed from npm these live inside node_modules and that path is not where the
+// reader is standing. Same defect as the reimport usage lines fixed in 1.3.3 — advice that
+// works on the author's machine is not advice.
 console.log('Check the hooks actually fired, not just that they registered:');
-console.log('  node scripts/doctor.mjs --hooks');
+console.log('  wmem doctor --hooks');
 console.log('');
 console.log('Next steps:');
-console.log(`  node scripts/personality.mjs show ${agent}     — customize personality`);
-console.log(`  node scripts/generate-l1.mjs --agent ${agent}  — preview L1 block`);
+console.log(`  node ${join(WMEM_ROOT, 'scripts', 'personality.mjs')} show ${agent}`);
+console.log(`  node ${join(WMEM_ROOT, 'scripts', 'generate-l1.mjs')} --agent ${agent}`);
 console.log('  Start a new Claude Code session to activate wmem');
 console.log('');
