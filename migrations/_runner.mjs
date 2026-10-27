@@ -20,6 +20,7 @@
 import { readdirSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { resolve } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -74,7 +75,17 @@ export function runMigrations(db, { quiet = false, dir = __dirname } = {}) {
 
 // CLI entry
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const dbPath = process.argv[2] || process.env.MEMORY_DB || 'data/memory.db';
+  // Same resolver as the server and the hooks. A cwd-relative default here meant
+  // `node migrations/_runner.mjs` from the wrong directory migrated a brand-new empty
+  // file and exited 0.
+  const { resolveDbPath, splitWarning } = await import('../core/db-path.mjs');
+  const resolution = process.argv[2]
+    ? { path: resolve(process.argv[2]), source: 'argv', rejected: [] }
+    : resolveDbPath();
+  const warn = splitWarning(resolution);
+  if (warn) console.error(warn);
+  const dbPath = resolution.path;
+  console.error(`[migrate] database: ${dbPath}`);
   const { default: Database } = await import('better-sqlite3');
   const db = new Database(dbPath);
   db.pragma('foreign_keys = ON');

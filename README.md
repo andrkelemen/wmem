@@ -277,11 +277,31 @@ node scripts/configure-ports.mjs --print         # show resolved config
 
 `wmem.config.json` is gitignored (per-machine). `wmem.config.example.json` ships as the template. Env vars always win over the file, which always wins over the default.
 
+### Where the database lives
+
+`~/.wmem/memory.db`, and **every component resolves it the same way** — the MCP server, the
+hooks and the migration runner all call one resolver. Before v1.3.1 they did not: the hooks
+defaulted to `~/.wmem/memory.db` while the server was registered against
+`<install>/data/memory.db`, so sessions were written to one store and searched for in
+another, with nothing reporting an error.
+
+- `MEMORY_DB` wins when set, and a relative value is made absolute against the working
+  directory. A cwd-relative *default* is how you get a new empty database per folder, so
+  there is no longer one.
+- `setup.mjs` writes `MEMORY_DB` into `~/.wmemrc`, which both halves read. That is the only
+  channel that reaches a hook, which is handed no environment at all.
+- Upgrading moves nothing. A populated database in any previously-defaulted location is
+  found and kept; if two of them hold data, `wmem doctor --status` names both and refuses
+  to choose for you.
+
+The database is deliberately *not* inside the install directory: `WMEM_ROOT` can be an npx
+cache or a `node_modules` folder that a reinstall deletes.
+
 ### Other env vars
 
 | Var | Purpose | Default |
 |-----|---------|---------|
-| `MEMORY_DB` | SQLite DB path | `./data/memory.db` |
+| `MEMORY_DB` | SQLite DB path | `~/.wmem/memory.db` — see **Where the database lives** |
 | `WMEM_TOKEN_FILE` | Bearer-auth token file path | `./.wmem-token` (auth disabled if file missing) |
 | `WMEM_ROLE` | Force role `master`/`mirror`/`unknown` at boot | auto-detect → `master` for single-user |
 | `WMEM_OUTBOX_*` | Outbox tuning (tick, batch, backoff, dead-letter) | see `modules/wmem-outbox/README.md` |

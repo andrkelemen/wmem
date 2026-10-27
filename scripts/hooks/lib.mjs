@@ -18,33 +18,23 @@ import { homedir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { resolveDbPath, splitWarning } from '../../core/db-path.mjs';
+
 export const WMEM_ROOT = process.env.WMEM_DIR || resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-/**
- * Read ~/.wmemrc. It is a shell file by history, so parse the subset that is actually
- * used — KEY=VALUE, optional `export`, optional quotes, # comments — and ignore anything
- * else rather than pretending to be a shell. Values already in the environment win,
- * matching the old `[ -f ] && . file` ordering where env overrides came after.
- */
-export function loadRc(env = process.env) {
-  const rc = join(homedir(), '.wmemrc');
-  if (!existsSync(rc)) return env;
-  for (const raw of readFileSync(rc, 'utf8').split('\n')) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    const m = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
-    if (!m) continue;
-    let v = m[2].trim().replace(/\s+#.*$/, '');
-    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
-    if (env[m[1]] === undefined) env[m[1]] = v;
-  }
-  return env;
-}
+// loadRc lives in core/db-path.mjs now, so the MCP server reads the rc file too — it was
+// the one channel that could have reconciled the split store, and only the hooks used it.
+export { loadRc } from '../../core/db-path.mjs';
 
 export function config() {
-  loadRc();
-  const db = process.env.MEMORY_DB || join(homedir(), '.wmem', 'memory.db');
-  process.env.MEMORY_DB = db;
+  // ONE resolver, shared with core/db.mjs and the migration runner. This used to default
+  // to ~/.wmem/memory.db while core defaulted to ./data/memory.db, so the hooks wrote
+  // every session into a store the MCP tools never opened.
+  const resolution = resolveDbPath();
+  const warn = splitWarning(resolution);
+  if (warn) process.stderr.write(warn + '\n');
+  const db = resolution.path;
+  process.env.MEMORY_DB = db;                    // children inherit the same answer
   mkdirSync(dirname(db), { recursive: true });
   return {
     db,
@@ -80,7 +70,7 @@ export function runScript(rel, args = [], { input } = {}) {
  */
 export function recordFire(event, detail = {}, { throttleMs = 0 } = {}) {
   try {
-    const path = join(dirname(process.env.MEMORY_DB || join(homedir(), '.wmem', 'memory.db')), 'hook-fires.json');
+    const path = join(dirname(process.env.MEMORY_DB || resolveDbPath().path), 'hook-fires.json');
     let all = {};
     try { all = JSON.parse(readFileSync(path, 'utf8')); } catch {}
 
@@ -110,6 +100,6 @@ export function recordFire(event, detail = {}, { throttleMs = 0 } = {}) {
 }
 
 export function readFires(dbPath) {
-  const path = join(dirname(dbPath || process.env.MEMORY_DB || join(homedir(), '.wmem', 'memory.db')), 'hook-fires.json');
+  const path = join(dirname(dbPath || process.env.MEMORY_DB || resolveDbPath().path), 'hook-fires.json');
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return {}; }
 }

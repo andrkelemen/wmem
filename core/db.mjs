@@ -36,11 +36,19 @@ import { backfillChunkIdForSession } from './scopes.mjs';
  * Exporting the list lets the tool schema carry it as an enum, which is what turns a
  * convention into a constraint.
  */
+import { resolveDbPath, splitWarning } from './db-path.mjs';
+
 export const DELIBERATE_SOURCE_TYPES = ['memory-chunk', 'observation', 'scene-digest', 'session-summary', 'identity'];
 export const AUTOMATIC_SOURCE_TYPES = ['conversation', 'note', 'fact', 'directory', 'topic', 'memory-import'];
 export const ALL_SOURCE_TYPES = [...AUTOMATIC_SOURCE_TYPES, ...DELIBERATE_SOURCE_TYPES];
 
-const DB_PATH = process.env.MEMORY_DB || './data/memory.db';
+// Resolved by the ONE resolver (core/db-path.mjs), never by a local default. Three
+// different local defaults in this repo are what split the store in the first place.
+const DB_RESOLUTION = resolveDbPath();
+const DB_PATH = DB_RESOLUTION.path;
+const SPLIT_WARNING = splitWarning(DB_RESOLUTION);
+export const activeDbPath = () => DB_PATH;
+export const dbResolution = () => DB_RESOLUTION;
 
 let db = null;
 
@@ -149,6 +157,10 @@ export function getDb() {
   // Ensure directory exists
   const dir = dirname(DB_PATH);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+  // Say it once, on stderr, where every entry point inherits it. A split store is silent
+  // by nature; the only cure is that something speaks.
+  if (SPLIT_WARNING) console.error(SPLIT_WARNING);
 
   db = new Database(DB_PATH);
   sqliteVec.load(db);

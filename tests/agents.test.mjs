@@ -7,7 +7,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { unlinkSync, existsSync } from 'node:fs';
+import { unlinkSync, existsSync, readdirSync } from 'node:fs';
 
 const TEST_DB = '/tmp/wmem-agents-test.db';
 if (existsSync(TEST_DB)) unlinkSync(TEST_DB);
@@ -52,20 +52,23 @@ async function run() {
 
 test('migration runner applies all pending migrations on fresh DB', () => {
   const d = db.getDb();
-  const applied = d.prepare('SELECT filename FROM schema_migrations ORDER BY filename').all();
-  assert.deepEqual(applied.map(r => r.filename), [
-    '0000_schema_migrations.sql',
-    '0001_agent_tables.sql',
-    '0002_preference_anchors.sql',
-    '0003_project_scopes_and_session_files.sql',
-    '0004_messages_and_written_by.sql',
-    '0005_capabilities.sql',
-    '0006_personality_rename.sql',
-    '0007_drop_legacy_agent_aliases.sql',
-    '0008_personality_core_traits.sql',
-    '0009_personality_switch_audit.sql',
-    '0010_wmem_role.sql',
-  ]);
+  const applied = d.prepare('SELECT filename FROM schema_migrations ORDER BY filename').all().map(r => r.filename);
+
+  // Read the migrations off disk instead of restating them here. The hardcoded list this
+  // replaces went stale the moment a migration was added and then FAILED ON MAIN, because
+  // 0011 is a code migration that records itself with a `.code` suffix — a test asserting
+  // the exact contents of a directory it does not read is a test that breaks on correct work.
+  const onDisk = readdirSync(new URL('../migrations/', import.meta.url))
+    .filter(f => /^\d{4}_.*\.sql$/.test(f)).sort();
+  assert.ok(onDisk.length > 0, 'no migrations found on disk');
+  for (const f of onDisk) assert.ok(applied.includes(f), `migration not applied: ${f}`);
+
+  // Code migrations live in getDb() rather than in a .sql file, and stamp themselves so
+  // they run once. They must be recorded too, or they re-run on every open.
+  const code = applied.filter(f => f.endsWith('.code'));
+  assert.ok(code.length > 0, 'no code migration recorded');
+  assert.ok(applied.length === onDisk.length + code.length,
+    `unexpected rows in schema_migrations: ${applied.filter(f => !onDisk.includes(f) && !f.endsWith('.code'))}`);
 });
 
 test('fresh DB has 6 seeded agents from built-in templates', () => {

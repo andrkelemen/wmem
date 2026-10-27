@@ -3,6 +3,52 @@
 All notable changes to wmem are documented here. Format loosely based on
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.3.1] — 2026-10-27 — the split database
+
+Reported by a user the morning after v1.3 shipped. On a default install the hooks wrote
+every session into one database and every MCP tool read another, so `memory_search` could
+never find what the hooks had just saved. **Nothing errored**, which is how it survived a
+release: a split store is not a crash, it is a silence.
+
+### Fixed
+- **One resolver decides where the database is** (`core/db-path.mjs`), imported by
+  `core/db.mjs`, the migration runner and the hooks. There were three different defaults
+  for an unset `MEMORY_DB` — `./data/memory.db` in core, the same relative path in the
+  migration runner, and `~/.wmem/memory.db` in the hooks — and `setup.mjs` registered the
+  MCP server with `MEMORY_DB=<install>/data/memory.db` baked into the command while
+  registering the hooks with no environment at all.
+- **`setup.mjs` writes `MEMORY_DB` into `~/.wmemrc`.** `loadRc()` has always read that
+  file and would have reconciled all of it, but nothing ever wrote it — the read side
+  shipped and the write side did not, the same shape as #17. The MCP server now reads the
+  rc file too, since it is the only channel that reaches a process nobody passed an
+  environment to.
+- **No more cwd-relative defaults.** A relative default is how you silently get a fresh
+  empty database every time you change directory; `node migrations/_runner.mjs` from the
+  wrong folder migrated a brand-new file and exited 0. The runner now prints the database
+  it is about to touch.
+- **The database no longer lives in the install directory.** A fresh install uses
+  `~/.wmem/memory.db`, because `WMEM_ROOT` can be an npx cache or a `node_modules` folder
+  that a reinstall deletes. **Existing stores are not moved or orphaned**: a populated
+  database in any previously-defaulted location is found and kept.
+- **Two populated databases are reported, never silently chosen between.** Anyone already
+  affected has sessions in both; an automatic pick would hide half of them, and an
+  automatic merge of two divergent stores is unrecoverable. One warning, printed by the
+  server, the hooks and setup alike.
+- **`tests/agents.test.mjs` no longer asserts a hardcoded list of migration filenames.**
+  It had been failing on `main` since v1.3 shipped, because migration 0011 is a code
+  migration that stamps itself with a `.code` suffix — a test that restates the contents of
+  a directory it does not read breaks on correct work. It now reads `migrations/` from disk.
+
+### Added
+- `tests/db-path.test.mjs` — including the assertion whose absence allowed all of this:
+  that the hooks and the server resolve to the same file. Every case verified red against
+  the pre-fix defaults.
+
+### Upgrading
+If sessions went missing after installing v1.3, they are not lost. Run `wmem doctor` — if
+two databases hold data it will name both. Point `MEMORY_DB` at whichever you want to keep
+and re-run `npx wmem init`; nothing is merged for you.
+
 ## [1.3.0-b] — 2026-10-26 — "v1.3b", documentation
 
 The README described an install that no longer exists and a roadmap that was wrong in both

@@ -21,7 +21,8 @@ import {
   recoverAllSessions, createCheckpoint, restoreCheckpoint,
   atomicPersonalitySwitch,
 } from '../core/doctor.mjs';
-import { getDb } from '../core/db.mjs';
+import { getDb, dbResolution } from '../core/db.mjs';
+import { splitWarning } from '../core/db-path.mjs';
 import { scanSecrets } from '../core/secret-patterns.mjs';
 
 const args = process.argv.slice(2);
@@ -32,6 +33,10 @@ const getArg = (flag) => { const i = args.indexOf(flag); return i >= 0 && args[i
 if (command === '--status' || command === 'status') {
   const s = getStatus();
   console.log(`wmem status:`);
+  // Name the file FIRST. A status page that reports counts without saying which database
+  // they came from is unreadable the moment there is more than one, which was the whole
+  // of the 2026-10-27 split: every number was true about a store the user was not using.
+  console.log(`  database:    ${dbResolution().path}  (${dbResolution().source})`);
   console.log(`  chunks:      ${s.chunks}`);
   console.log(`  sessions:    ${s.sessions}`);
   console.log(`  tags:        ${s.tags}`);
@@ -46,6 +51,11 @@ if (command === '--status' || command === 'status') {
     for (const a of s.agents) {
       console.log(`    ${a.agent.padEnd(20)} ${String(a.chunks).padStart(6)} chunks  ${String(a.sessions).padStart(4)} sessions`);
     }
+  }
+  {
+    // The one view a person reaches for after "my sessions vanished" has to answer it.
+    const w = splitWarning(dbResolution());
+    if (w) console.log(`\n${w}`);
   }
 
 } else if (command === '--fix' || command === 'fix') {

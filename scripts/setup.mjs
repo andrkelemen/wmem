@@ -18,11 +18,12 @@
  *   node scripts/setup.mjs --dry-run
  */
 
-import { existsSync, mkdirSync, readdirSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { join, dirname, resolve } from 'path';
 import { homedir, platform as osPlatform } from 'os';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
+import { resolveDbPath, splitWarning } from '../core/db-path.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WMEM_ROOT = resolve(__dirname, '..');
@@ -40,9 +41,37 @@ for (let i = 0; i < argv.length; i++) {
   else if (argv[i] === '--born' && argv[i + 1]) flags.born = argv[++i];
   else if (argv[i] === '--dry-run') flags.dryRun = true;
   else if (argv[i] === '--scope' && argv[i + 1]) flags.scope = argv[++i];
+  else if (argv[i] === '--db' && argv[i + 1]) flags.db = argv[++i];
 }
 
 // ── Helpers ─────────────────────────────────────────────
+
+/**
+ * Write one KEY=VALUE into ~/.wmemrc, keeping everything else in the file.
+ *
+ * This is the half that was missing. `loadRc()` has always read this file, and the MCP
+ * server now reads it too — but nothing ever WROTE it, so the only channel that could
+ * reconcile a hook process (no environment) with an MCP process (environment baked into
+ * its registration) was permanently empty. A read side with no write side is not a
+ * feature with a gap; it is a feature that has never once run.
+ */
+function upsertRc(key, value, rcPath = join(HOME, '.wmemrc')) {
+  const line = `${key}="${value}"`;
+  let lines = [];
+  if (existsSync(rcPath)) lines = readFileSync(rcPath, 'utf8').split('\n');
+  const re = new RegExp(`^(?:export\\s+)?${key}\\s*=`);
+  const i = lines.findIndex(l => re.test(l.trim()));
+  if (i >= 0) {
+    if (lines[i].trim() === line) return { rcPath, changed: false };
+    lines[i] = line;
+  } else {
+    if (lines.length && lines[lines.length - 1].trim() !== '') lines.push('');
+    lines.push('# written by wmem setup — the hooks and the MCP server both read this');
+    lines.push(line);
+  }
+  writeFileSync(rcPath, lines.join('\n').replace(/\n*$/, '\n'));
+  return { rcPath, changed: true };
+}
 
 function log(msg) { console.log(`  ${msg}`); }
 function step(n, msg) { console.log(`\n[${n}] ${msg}`); }
@@ -69,7 +98,16 @@ const agent = flags.agent || 'default';
 const claudeDir = flags.claudeDir || join(HOME, '.claude');
 const projectsDir = join(claudeDir, 'projects');
 const claudeMd = join(claudeDir, 'CLAUDE.md');
-const wmemDb = join(WMEM_ROOT, 'data', 'memory.db');
+// The database does NOT live in the install directory. WMEM_ROOT can be an npx cache or a
+// node_modules folder that a reinstall deletes, and pinning it there is half of the split
+// reported on 2026-10-27: setup baked <install>/data/memory.db into the MCP registration
+// while the hooks, given no environment at all, used ~/.wmem/memory.db.
+// One resolver decides, here and everywhere else, and an existing populated store wins so
+// no one upgrading gets pointed at an empty file.
+const dbResolution = flags.db
+  ? { path: resolve(flags.db), source: 'flag', rejected: [] }
+  : resolveDbPath({ env: { ...process.env, MEMORY_DB: undefined } });
+const wmemDb = dbResolution.path;
 const scope = flags.scope || 'user';
 
 console.log('\nwmem setup\n');
@@ -133,18 +171,32 @@ if (hasNodeModules) {
 
 step(4, 'Setting up data directory');
 
-const dataDir = join(WMEM_ROOT, 'data');
+const dataDir = dirname(wmemDb);
 if (existsSync(dataDir)) {
-  ok(`data/ exists`);
+  ok(`${dataDir} exists`);
 } else if (flags.dryRun) {
-  log('would create data/');
+  log(`would create ${dataDir}`);
 } else {
   mkdirSync(dataDir, { recursive: true });
-  ok('data/ created');
+  ok(`${dataDir} created`);
 }
 
 // Set DB path for all subsequent operations
 process.env.MEMORY_DB = wmemDb;
+ok(`database: ${wmemDb}  (${dbResolution.source})`);
+{
+  const w = splitWarning(dbResolution);
+  if (w) { warn('more than one wmem database holds data'); console.log(w); }
+}
+
+// Persist it where BOTH halves look. Without this the hooks get no environment at all and
+// fall back to their own default — which is exactly how the store split.
+if (flags.dryRun) {
+  log(`would write MEMORY_DB to ${join(HOME, '.wmemrc')}`);
+} else {
+  const rc = upsertRc('MEMORY_DB', wmemDb);
+  ok(rc.changed ? `MEMORY_DB written to ${rc.rcPath}` : `MEMORY_DB already correct in ${rc.rcPath}`);
+}
 
 // ── Step 5: Import existing files ───────────────────────
 
